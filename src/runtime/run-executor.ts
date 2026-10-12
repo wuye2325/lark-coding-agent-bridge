@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentAdapter, AgentEvent, AgentRun } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../agent/types';
+import type { CallbackRegistryStore, CallbackRunContext } from '../card/callback-registry';
 import { ActiveRuns, type RunHandle } from '../bot/active-runs';
 import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
@@ -13,6 +14,7 @@ export interface RunExecutorDeps {
   createRunId?: () => string;
   now?: () => number;
   postDoneExitGraceMs?: number;
+  callbackRegistry?: CallbackRegistryStore;
 }
 
 export interface SubmitRunInput {
@@ -25,6 +27,7 @@ export interface SubmitRunInput {
   images?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;
+  callbackContext?: Pick<CallbackRunContext, 'chatId' | 'operatorOpenId' | 'agentId'>;
   observability?: {
     profile: string;
     agent: string;
@@ -51,6 +54,7 @@ export class RunExecutor {
   private readonly createRunId: () => string;
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
+  private readonly callbackRegistry?: CallbackRegistryStore;
 
   constructor(deps: RunExecutorDeps) {
     this.agent = deps.agent;
@@ -59,6 +63,7 @@ export class RunExecutor {
     this.createRunId = deps.createRunId ?? randomUUID;
     this.now = deps.now ?? Date.now;
     this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
+    this.callbackRegistry = deps.callbackRegistry;
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
@@ -94,7 +99,7 @@ export class RunExecutor {
     const runId = this.createRunId();
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
-    const runOptions = {
+    const runOptions: AgentRunOptions = {
       runId,
       prompt: input.policy.prompt,
       cwd: input.policy.cwdRealpath,
@@ -106,6 +111,12 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
+    };
+    const revokeCallback = async (): Promise<void> => {
+      if (!runOptions.callbackToken) return;
+      await this.callbackRegistry?.endRun(runOptions.callbackToken).catch((err) => {
+        log.fail('callback-registry', err, { step: 'end-run' });
+      });
     };
     let run: AgentRun;
     try {
@@ -125,10 +136,22 @@ export class RunExecutor {
       );
     }
     try {
+      if (this.callbackRegistry && input.callbackContext) {
+        runOptions.callbackToken = await this.callbackRegistry.beginRun({
+          runId, scope: input.scopeId, ...input.callbackContext,
+          policyFingerprint: input.policy.policyFingerprint,
+          agentSessionId: input.callbackContext.agentId === 'claude' ? input.sessionId : input.threadId,
+        });
+      }
+      if (this.activeRuns.newRunsPaused()) {
+        throw new RunRejected('reconnect-in-progress', '登记期间 Bridge 开始重连');
+      }
       run = this.agent.run(runOptions);
     } catch (err) {
       release();
       releaseScope();
+      await revokeCallback();
+      if (err instanceof RunRejected) throw err;
       throw new SpawnFailed('agent spawn failed', err);
     }
     const dimensions = {
@@ -154,6 +177,7 @@ export class RunExecutor {
       releaseScope();
       release();
       await run.stop().catch(() => {});
+      await revokeCallback();
       throw new RunRejected(
         'run-already-active',
         err instanceof Error ? err.message : 'another run is already active for this scope',
@@ -163,6 +187,7 @@ export class RunExecutor {
     const cleanup = async (waitForExit: boolean): Promise<void> => {
       if (cleaned) return;
       cleaned = true;
+      await revokeCallback();
       this.activeRuns.unregister(input.scopeId, run);
       release();
       if (waitForExit) {
@@ -185,6 +210,12 @@ export class RunExecutor {
       dimensions,
       startedAt,
       now: this.now,
+      onSystem: async (event) => {
+        const sessionId = input.callbackContext?.agentId === 'claude' ? event.sessionId : event.threadId;
+        if (sessionId && runOptions.callbackToken) {
+          await this.callbackRegistry?.setRunSession(runOptions.callbackToken, sessionId);
+        }
+      },
     }), async () => {
       await cleanup(!handle.interrupted);
     });
@@ -211,11 +242,13 @@ function observeRunEvents(
     dimensions: Record<string, unknown>;
     startedAt: number;
     now: () => number;
+    onSystem?: (event: Extract<AgentEvent, { type: 'system' }>) => Promise<void>;
   },
 ): AsyncIterable<AgentEvent> {
   return {
     async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
       for await (const event of events) {
+        if (event.type === 'system') await opts.onSystem?.(event);
         if (event.type === 'done') {
           log.info('run', 'completed', {
             ...opts.dimensions,
