@@ -396,6 +396,59 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         }).catch((err) => log.fail('comment', err));
       }).catch((err) => log.fail('comment', err));
     },
+    reaction: async (evt) => {
+      await withTrace({ msgId: evt.messageId }, async () => {
+        const result = await channel.rawClient.im.v1.message.get({
+          path: { message_id: evt.messageId },
+        });
+        const target = result.data?.items?.[0];
+        const chatId = target?.chat_id;
+        const senderId = target?.sender?.id;
+        if (
+          !chatId || !senderId ||
+          (senderId !== channel.botIdentity?.openId && senderId !== cfg.accounts.app.id)
+        ) {
+          log.info('reaction', 'skip-target', { messageId: evt.messageId, senderId });
+          return;
+        }
+        const mode = await chatModeCache.resolve(channel, chatId);
+        const access = mode === 'p2p'
+          ? canUseDm(controls.profileConfig, controls, evt.operator.openId)
+          : canUseGroup(controls.profileConfig, controls, chatId, evt.operator.openId);
+        if (!access.ok) {
+          log.info('reaction', 'denied', { messageId: evt.messageId, reason: access.reason });
+          return;
+        }
+        const threadId = target.thread_id;
+        const scope = threadId ? `${chatId}:${threadId}` : chatId;
+        pending.push(scope, {
+          messageId: evt.messageId,
+          chatId,
+          chatType: mode === 'p2p' ? 'p2p' : 'group',
+          threadId,
+          senderId: evt.operator.openId,
+          content: `[reaction] ${JSON.stringify({
+            action: evt.action,
+            emojiType: evt.emojiType,
+            operatorOpenId: evt.operator.openId,
+            messageId: evt.messageId,
+          })}`,
+          rawContentType: 'reaction',
+          resources: [],
+          mentions: [],
+          mentionAll: false,
+          mentionedBot: false,
+          createTime: evt.actionTime ?? Date.now(),
+        });
+        log.info('reaction', 'enqueued', { scope, action: evt.action, emojiType: evt.emojiType });
+        if (evt.action === 'added') {
+          // DONE 是飞书的勾选类表情；这里仅表示输入已接受。
+          await channel.addReaction(evt.messageId, 'DONE').catch((err) =>
+            log.warn('reaction', 'ack-failed', { messageId: evt.messageId, err: String(err) }),
+          );
+        }
+      }).catch((err) => log.fail('reaction', err));
+    },
     reconnecting: () => {
       consecutiveReconnects++;
       log.warn('ws', 'reconnecting', { consecutive: consecutiveReconnects });
@@ -1077,8 +1130,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // a first streamed token (markdown mode) or the whole run ends (text mode).
   // Add a "Typing" reaction to the triggering message as an instant ack, but
   // never let that outbound API call block agent event draining.
+  // 表情事件已在入队时回执，撤回也不能因运行启动而追加 Typing。
   const reactionPromise =
-    cotEnabled || replyMode === 'card' ? undefined : addWorkingReaction(channel, lastMsg.messageId);
+    cotEnabled || replyMode === 'card' || lastMsg.rawContentType === 'reaction'
+      ? undefined
+      : addWorkingReaction(channel, lastMsg.messageId);
 
   try {
     if (cotEnabled) {
