@@ -23,3 +23,13 @@
 采用 `DONE`，依据[飞书官方表情文案说明](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-reaction/emojis-introduce.md)中的勾选类表情。2026-10-14 直接读取官方 Markdown，包含 `emoji_done.png | DONE`；大小写按官方原值。
 
 本轮未发送真实飞书消息或修改应用配置；部署前提仍为 issue #3 中的 reaction 读取权限与 created/deleted 两事件订阅。
+
+## Review 修复：并发事件保序
+
+Spec review 发现 SDK 的 `pushLight` 只去重、没有串行化；消息反查的并发返回可能让同目标撤回抢在先前添加之前入队。
+
+- 先新增并发延迟测试：同时调用 added 与 removed 的 handler，首个消息反查阻塞超过 debounce，测试实际发现 removed 已单独启动 run（期望 0，实际 1）。
+- 修复：按目标 messageId 保留短生命周期的内存 Promise 链，只对反查、访问校验与入队保序；最后一个任务结束后释放。无关目标独立处理，不保存业务去重状态，不增加持久化。
+- ack 改为入队后异步请求，不占据处理链；ack 失败继续仅记日志。
+- 并发延迟测试转绿；另外验证阻塞 ack 不影响撤回入队、阻塞一个目标反查不影响无关目标。
+- 修复后 reaction 集成测试 15/15 通过，`pnpm typecheck`、`git diff --check` 通过。

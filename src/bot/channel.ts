@@ -337,6 +337,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
 
+  // 只在反查与入队期间保留同一目标消息的处理链，防止并发请求重排事件。
+  const reactionIntakes = new Map<string, Promise<void>>();
+
   channel.on({
     message: async (msg) => {
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
@@ -397,7 +400,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }).catch((err) => log.fail('comment', err));
     },
     reaction: async (evt) => {
-      await withTrace({ msgId: evt.messageId }, async () => {
+      const previous = reactionIntakes.get(evt.messageId) ?? Promise.resolve();
+      const task = previous.then(() => withTrace({ msgId: evt.messageId }, async () => {
         const result = await channel.rawClient.im.v1.message.get({
           path: { message_id: evt.messageId },
         });
@@ -443,11 +447,17 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         log.info('reaction', 'enqueued', { scope, action: evt.action, emojiType: evt.emojiType });
         if (evt.action === 'added') {
           // DONE 是飞书的勾选类表情；这里仅表示输入已接受。
-          await channel.addReaction(evt.messageId, 'DONE').catch((err) =>
+          void channel.addReaction(evt.messageId, 'DONE').catch((err) =>
             log.warn('reaction', 'ack-failed', { messageId: evt.messageId, err: String(err) }),
           );
         }
-      }).catch((err) => log.fail('reaction', err));
+      })).catch((err) => log.fail('reaction', err));
+      reactionIntakes.set(evt.messageId, task);
+      try {
+        await task;
+      } finally {
+        if (reactionIntakes.get(evt.messageId) === task) reactionIntakes.delete(evt.messageId);
+      }
     },
     reconnecting: () => {
       consecutiveReconnects++;

@@ -73,6 +73,70 @@ afterEach(async () => {
 });
 
 describe('消息表情回复进入 Agent 会话', () => {
+  it('添加回执请求未完成时仍接受后续撤回', async () => {
+    const h = await createHarness();
+    let release!: () => void;
+    h.channel.addReaction.mockImplementationOnce(() => new Promise<string>(resolve => {
+      release = () => resolve('ack');
+    }));
+    await startTestBridge(h);
+    try {
+      const added = h.channel.handlers.reaction!(reaction());
+      const removed = h.channel.handlers.reaction!(reaction({ action: 'removed', actionTime: 1760000002000 }));
+      await waitFor(() => h.agent.runOptions.length === 1);
+      const input = readSection(h.agent.runOptions[0]!.prompt, 'user_input') as { text: string };
+      expect(input.text).toContain('"action":"added"');
+      expect(input.text).toContain('"action":"removed"');
+      await Promise.all([added, removed]);
+    } finally {
+      release?.();
+    }
+  });
+
+  it('某个目标的消息反查阻塞时不阻塞无关目标', async () => {
+    const h = await createHarness();
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    h.channel.rawClient.im.v1.message.get.mockImplementationOnce(async () => {
+      await blocked;
+      return { data: { items: [{ chat_id: 'oc_chat', sender: { id: 'ou_bot' } }] } };
+    });
+    await startTestBridge(h);
+    const first = h.channel.handlers.reaction!(reaction());
+    const independent = h.channel.handlers.reaction!(reaction({ messageId: 'om_independent', action: 'removed' }));
+    try {
+      await waitFor(() => h.agent.runOptions.length === 1);
+      expect(h.agent.runOptions[0]!.prompt).toContain('om_independent');
+      expect(h.agent.runOptions[0]!.prompt).not.toContain('om_bot_message_full_id');
+    } finally {
+      release();
+      await Promise.all([first, independent]);
+    }
+  });
+
+  it('同目标的并发添加与撤回在消息反查延迟时仍按到达顺序入队', async () => {
+    const h = await createHarness();
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    h.channel.rawClient.im.v1.message.get.mockImplementationOnce(async () => {
+      await blocked;
+      return { data: { items: [{ chat_id: 'oc_chat', sender: { id: 'ou_bot' } }] } };
+    });
+    await startTestBridge(h);
+    const added = h.channel.handlers.reaction!(reaction());
+    const removed = h.channel.handlers.reaction!(reaction({ action: 'removed', actionTime: 1760000002000 }));
+    try {
+      await new Promise(resolve => setTimeout(resolve, 700));
+      expect(h.agent.runOptions).toHaveLength(0);
+    } finally {
+      release();
+      await Promise.all([added, removed]);
+    }
+    await waitFor(() => h.agent.runOptions.length === 1);
+    const input = readSection(h.agent.runOptions[0]!.prompt, 'user_input') as { text: string };
+    expect(input.text.indexOf('"action":"added"')).toBeLessThan(input.text.indexOf('"action":"removed"'));
+  });
+
   it('SDK 重复投递仅接受一次，真实重加保留且 Bot ack 不形成回路', async () => {
     const h = await createHarness();
     const req = createRequire(import.meta.url);
