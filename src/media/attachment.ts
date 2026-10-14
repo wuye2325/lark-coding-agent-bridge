@@ -61,7 +61,8 @@ export function normalizeAttachments(
   let acceptedCount = 0;
   let acceptedBytes = 0;
 
-  return candidates.map((candidate) => {
+  return candidates.map((input) => {
+    const candidate = input.kind === 'sticker' ? { ...input, kind: 'image' as const } : input;
     const base = {
       ...candidate,
       path: candidate.absPath,
@@ -123,9 +124,6 @@ export function toPromptAttachment(attachment: NormalizedAttachment): BridgeProm
 function earlyDecision(
   candidate: AttachmentCandidate,
 ): Pick<NormalizedAttachment, 'decision' | 'rejectionReason'> | undefined {
-  if (candidate.kind === 'sticker') {
-    return { decision: 'skipped', rejectionReason: 'sticker' };
-  }
   if (candidate.kind === 'audio' || candidate.kind === 'video') {
     return { decision: 'skipped', rejectionReason: 'unsupported-kind' };
   }
