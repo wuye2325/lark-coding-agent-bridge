@@ -23,8 +23,9 @@ describe('signed card callback dispatch', () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
-  it('原 run 已结束时仍将已绑定卡片的选择送回会话，且不泄漏 callback id', async () => {
-    const h = await createHarness();
+  it.each(['group', 'p2p'] as const)('chatMode=%s 时原 run 已结束仍将已绑定卡片的选择送回会话，且不泄漏 callback id', async (chatMode) => {
+    const h = await createHarness({ chatMode });
+    if (chatMode === 'p2p') h.controls.profileConfig.access.allowedUsers.push('ou_operator');
     const token = await h.registry.beginRun({
       runId: 'run-finished', scope: 'oc_group', chatId: 'oc_group',
       operatorOpenId: 'ou_operator', policyFingerprint: 'fp-1', agentId: 'claude', agentSessionId: 'callback-session',
@@ -37,9 +38,12 @@ describe('signed card callback dispatch', () => {
 
     await h.dispatch({ __bridge_cb: true, callback_id: registration.id, choice: 'a' });
 
-    expect(h.pending.cancel('oc_group').map((msg) => msg.content)).toEqual([
+    const queued = h.pending.cancel('oc_group');
+    expect(queued.map((msg) => msg.content)).toEqual([
       '[card-click] {"choice":"a"}',
     ]);
+    expect(queued[0]?.chatType).toBe(chatMode);
+    expect(queued[0]?.threadId).toBeUndefined();
   });
 
   it('校验并转发 SDK 规范化的数值、布尔值和多选表单', async () => {
@@ -141,8 +145,8 @@ describe('signed card callback dispatch', () => {
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
-  it('话题卡片在原 run 结束后只进入来源话题的会话', async () => {
-    const h = await createHarness({ chatMode: 'topic' });
+  it.each(['topic', 'group'] as const)('chatMode=%s 时话题卡片在原 run 结束后只进入来源话题的会话', async (chatMode) => {
+    const h = await createHarness({ chatMode });
     h.channel.rawThreadIds.set('om_card', 'th_topic');
     const token = await h.registry.beginRun({ runId: 'source', scope: 'oc_group:th_topic', chatId: 'oc_group', operatorOpenId: 'ou_operator', policyFingerprint: 'fp-1', agentId: 'claude', agentSessionId: 'callback-session' });
     const registration = await h.registry.register(token, { schema: { type: 'object', properties: {} } });
@@ -150,7 +154,10 @@ describe('signed card callback dispatch', () => {
     await h.registry.endRun(token);
     await h.dispatch({ __bridge_cb: true, callback_id: registration.id });
     expect(h.pending.cancel('oc_group')).toEqual([]);
-    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(1);
+    const queued = h.pending.cancel('oc_group:th_topic');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.content).toBe('[card-click] {}');
+    expect(queued[0]?.threadId).toBe('th_topic');
   });
 
   it('表单不符合登记 schema 时不消费 id，展示卡不触发回调', async () => {

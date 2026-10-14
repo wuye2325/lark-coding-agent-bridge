@@ -210,18 +210,17 @@ async function resolveScope(
 ): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode !== 'topic') {
+  if (mode === 'p2p') {
     return { scope: chatId, threadId: undefined, mode };
   }
-  // Topic group — need the carrier message's thread_id to compose scope.
-  // One API call per click; could cache by messageId if it ever becomes hot.
+  // 与消息管线一致：群聊以卡片消息的 thread_id 为准，chat_mode 可能仍为 group。
   const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
   if (!threadId) {
     // Fall back to plain chatId. Better to land in the chat's "default"
     // scope than fail the click silently.
     return { scope: chatId, threadId: undefined, mode };
   }
-  return { scope: `${chatId}:${threadId}`, threadId, mode };
+  return { scope: `${chatId}:${threadId}`, threadId, mode: 'topic' };
 }
 
 function forwardToAgent(
