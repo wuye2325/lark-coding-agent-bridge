@@ -68,24 +68,15 @@ export class MediaCache {
 
   private async resolveOne(item: ResourceRequest): Promise<AttachmentCandidate | null> {
     const { messageId, resource: r } = item;
-    if (r.type === 'sticker') {
-      log.info('media', 'skip', { reason: 'sticker', fileKey: r.fileKey });
-      return null;
-    }
-    const kind: AttachmentKind = r.type;
+    const kind: AttachmentKind = r.type === 'sticker' ? 'image' : r.type;
     const tmpPath = join(
       this.rootDir,
       `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
 
-    // downloadResourceToFile hits im.v1.messageResource.get under the hood —
-    // the endpoint required for resources that arrived in user messages. It
-    // maps image resources to 'image' and everything else (file/audio/video)
-    // to 'file'. We stream straight to disk (not via a full Buffer) because the
-    // size limit is only enforced after download: a large attachment would
-    // otherwise sit entirely in the JS heap before being rejected. It returns
-    // the server content-type so we can pick an accurate extension, falling
-    // back to defaultMime(kind) when absent.
+    // 用户消息资源通过 im.v1.messageResource.get 下载；sticker 使用 file 路径，
+    // 落盘后按图片策略处理。直接流式写入，避免大小校验前将整个附件放进内存。
+    // 扩展名采用服务端 MIME，缺失时沿用附件类型的默认值。
     const { contentType } = await this.channel.downloadResourceToFile(
       messageId,
       r.fileKey,

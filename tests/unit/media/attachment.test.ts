@@ -30,7 +30,7 @@ describe('attachment policy normalization', () => {
     ]);
   });
 
-  it('rejects SVG and unknown images while skipping sticker/audio/video by default', () => {
+  it('拒绝 SVG 和未知图片，表情消息按图片接受，音视频保持跳过', () => {
     const out = normalizeAttachments([
       candidate({ kind: 'image', mime: 'image/svg+xml', hash: 'svg' }),
       candidate({ kind: 'image', mime: 'application/octet-stream', hash: 'unknown' }),
@@ -42,7 +42,7 @@ describe('attachment policy normalization', () => {
     expect(out.map((item) => [item.kind, item.decision, item.rejectionReason])).toEqual([
       ['image', 'rejected', 'unsupported-image-mime'],
       ['image', 'rejected', 'unsupported-image-mime'],
-      ['sticker', 'skipped', 'sticker'],
+      ['image', 'accepted', undefined],
       ['audio', 'skipped', 'unsupported-kind'],
       ['video', 'skipped', 'unsupported-kind'],
     ]);
