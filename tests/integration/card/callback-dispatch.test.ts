@@ -1,4 +1,4 @@
-import type { CardActionEvent } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse } from '@larksuite/channel';
 import { realpath, writeFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
@@ -15,6 +15,7 @@ import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter, type FakeAgentRun } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
+import { createSdkCardIngress } from '../../helpers/sdk-card-ingress.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -93,14 +94,18 @@ describe('signed card callback dispatch', () => {
   ])('拒绝来源消息、chat 或操作者不符的点击：%j', async (evt) => {
     const h = await createHarness();
     const id = await registerCallback(h);
-    await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' }, undefined, evt);
+    expect(await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' }, undefined, evt)).toEqual({
+      toast: { type: 'warning', content: evt.chatId ? '无权操作此卡片' : '卡片与当前会话或权限不符，请重新发起' },
+    });
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
   it('策略指纹更新后拒绝旧登记', async () => {
     const h = await createHarness({ fingerprint: 'fp-changed' });
     const id = await registerCallback(h);
-    await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' });
+    expect(await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' })).toEqual({
+      toast: { type: 'warning', content: '卡片与当前会话或权限不符，请重新发起' },
+    });
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
@@ -108,7 +113,9 @@ describe('signed card callback dispatch', () => {
     '拒绝不符合 schema 的数据且不消耗合法登记：%j', async (data) => {
       const h = await createHarness();
       const id = await registerCallback(h);
-      await h.dispatch({ __bridge_cb: true, callback_id: id, ...data });
+      expect(await h.dispatch({ __bridge_cb: true, callback_id: id, ...data })).toEqual({
+        toast: { type: 'warning', content: '提交内容不符合卡片要求，请检查后重试' },
+      });
       expect(h.pending.cancel('oc_group')).toEqual([]);
       await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' });
       expect(h.pending.cancel('oc_group')).toHaveLength(1);
@@ -120,12 +127,76 @@ describe('signed card callback dispatch', () => {
     const h = await createHarness({ now: () => now });
     const token = await h.registry.beginRun({ runId: 'source', scope: 'oc_group', chatId: 'oc_group', operatorOpenId: 'ou_operator', policyFingerprint: 'fp-1', agentId: 'claude', agentSessionId: 'callback-session' });
     const registration = await h.registry.register(token, { schema: { type: 'object', properties: {} }, ttlSeconds: 1 });
-    await h.dispatch({ __bridge_cb: true, callback_id: registration.id });
+    expect(await h.dispatch({ __bridge_cb: true, callback_id: registration.id })).toEqual({
+      toast: { type: 'info', content: '卡片正在准备，请稍后再点' },
+    });
     expect(h.pending.cancel('oc_group')).toEqual([]);
     await h.registry.bind(token, registration.id, 'om_card');
     now = 2000;
-    await h.dispatch({ __bridge_cb: true, callback_id: registration.id });
+    expect(await h.dispatch({ __bridge_cb: true, callback_id: registration.id })).toEqual({
+      toast: { type: 'warning', content: '卡片已过期，请重新发起' },
+    });
     expect(h.pending.cancel('oc_group')).toEqual([]);
+  });
+
+  it('未绑定时提示等待，绑定后原卡可重试，消费后提示已处理', async () => {
+    const h = await createHarness();
+    const token = await h.registry.beginRun({ runId: 'source', scope: 'oc_group', chatId: 'oc_group', operatorOpenId: 'ou_operator', policyFingerprint: 'fp-1', agentId: 'claude', agentSessionId: 'callback-session' });
+    const registration = await h.registry.register(token, { schema: { type: 'object', properties: {} } });
+    const payload = { __bridge_cb: true, callback_id: registration.id };
+    expect(await h.dispatch(payload)).toEqual({ toast: { type: 'info', content: '卡片正在准备，请稍后再点' } });
+    expect(h.pending.cancel('oc_group')).toEqual([]);
+    await h.registry.bind(token, registration.id, 'om_card');
+    await h.dispatch(payload);
+    expect(h.pending.cancel('oc_group')).toHaveLength(1);
+    expect(await h.dispatch(payload)).toEqual({ toast: { type: 'info', content: '该选择已处理，请勿重复提交' } });
+    expect(h.pending.cancel('oc_group')).toEqual([]);
+  });
+
+  it.each(['esm', 'cjs'] as const)('真实 SDK %s 允许未绑定点击后的新投递重试，并过滤同一投递重放', async (mode) => {
+    const h = await createHarness();
+    const token = await h.registry.beginRun({ runId: 'source', scope: 'oc_group', chatId: 'oc_group', operatorOpenId: 'ou_operator', policyFingerprint: 'fp-1', agentId: 'claude', agentSessionId: 'callback-session' });
+    const registration = await h.registry.register(token, { schema: { type: 'object', properties: {} } });
+    const ingress = await createSdkCardIngress((evt) => h.dispatch(evt.action.value as Record<string, unknown>, undefined, evt), mode);
+    cleanups.push(() => ingress.channel.disconnect());
+    const click = (eventId: string) => ingress.click({ token: eventId, action: { tag: 'button', value: { __bridge_cb: true, callback_id: registration.id } } });
+    expect(await click('first')).toEqual({ toast: { type: 'info', content: '卡片正在准备，请稍后再点' } });
+    await h.registry.bind(token, registration.id, 'om_card');
+    await click('first');
+    expect(h.pending.cancel('oc_group')).toEqual([]);
+    await click('second');
+    expect(h.pending.cancel('oc_group').map((msg) => msg.content)).toEqual(['[card-click] {}']);
+    expect(await click('third')).toEqual({ toast: { type: 'info', content: '该选择已处理，请勿重复提交' } });
+    expect(h.pending.cancel('oc_group')).toEqual([]);
+  });
+
+  it.each(['header', 'event_id', 'token', 'missing'] as const)('真实 SDK 的 %s 投递标识区分新点击与重放', async (shape) => {
+    let calls = 0;
+    const ingress = await createSdkCardIngress(async () => { calls++; });
+    cleanups.push(() => ingress.channel.disconnect());
+    const event = (id: string) => ({
+      action: { tag: 'button', value: { choice: 'a' } },
+      ...(shape === 'header' ? { header: { event_id: id } } : shape === 'missing' ? {} : { [shape]: id }),
+    });
+    await ingress.click(event('first'));
+    await ingress.click(event('first'));
+    expect(calls).toBe(shape === 'missing' ? 2 : 1);
+    await ingress.click(event('second'));
+    expect(calls).toBe(shape === 'missing' ? 3 : 2);
+  });
+
+  it('真实 SDK 的并发重复投递只执行一次 handler', async () => {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const ingress = await createSdkCardIngress(async () => { calls++; await wait; });
+    cleanups.push(() => ingress.channel.disconnect());
+    const payload = { token: 'concurrent', action: { tag: 'button', value: { choice: 'a' } } };
+    const first = ingress.click(payload);
+    await ingress.click(payload);
+    expect(calls).toBe(1);
+    release();
+    await first;
   });
 
   it('无效 token 和伪造 callback_id 不能触发内置命令', async () => {
@@ -141,7 +212,9 @@ describe('signed card callback dispatch', () => {
     const h = await createHarness();
     const id = await registerCallback(h);
     await writeFile(`${h.tmp.profile}/callback-registry.json`, '{"version":1,"runs":[],"registrations":[],"events":{}}');
-    await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' });
+    expect(await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' })).toEqual({
+      toast: { type: 'warning', content: '暂时无法处理此卡片，请稍后重试' },
+    });
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
@@ -177,10 +250,14 @@ describe('signed card callback dispatch', () => {
     const h = await createHarness();
     const id = await registerCallback(h);
     h.sessions.clear('oc_group');
-    await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' });
+    expect(await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' })).toEqual({
+      toast: { type: 'warning', content: '原会话已不可用，请在当前会话重新发起' },
+    });
     expect(h.pending.cancel('oc_group')).toEqual([]);
     h.sessions.set('oc_group', 'different-session', await realpath(h.tmp.workspace));
-    await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' });
+    expect(await h.dispatch({ __bridge_cb: true, callback_id: id, choice: 'a' })).toEqual({
+      toast: { type: 'warning', content: '卡片与当前会话或权限不符，请重新发起' },
+    });
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
@@ -296,7 +373,7 @@ type Harness = {
   pending: PendingQueue;
   auth: CallbackAuth;
   registry: CallbackRegistryStore;
-  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>, evt?: Partial<CardActionEvent>): Promise<void>;
+  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>, evt?: Partial<CardActionEvent>): Promise<void | CardActionResponse>;
   token(
     action: string,
     overrides?: { operatorOpenId?: string; nonce?: string; scope?: string },

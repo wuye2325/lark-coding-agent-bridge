@@ -1,0 +1,46 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 923b5355b4460746f1f047f7c64500ce719c8a63..4acc51910cf4998d3d5ff9f971190cd88b17e7f4 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -6043,11 +6043,15 @@ var LarkChannel = class {
+ 			"card.action.trigger": async (raw) => {
+ 				const evt = normalizeCardAction(raw, { includeRaw });
+ 				if (!evt) return void 0;
+-				const actionId = cardActionId(evt.action);
+-				return this.safety.pushAction(`card:${evt.messageId}:${evt.operator.openId}:${actionId}`, evt.chatId, async () => {
++				// 平台重放使用同一投递标识，用户重新点击则是新的投递。
++				const eventId = raw.event_id ?? raw.header?.event_id ?? raw.token;
++				const handle = async () => {
+ 					const h = this.handlers.cardAction;
+ 					return h ? h(evt) : void 0;
+-				});
++				};
++				// 标识缺失时生成独立投递键，保留队列但不屏蔽真实重试。
++				const deliveryId = typeof eventId === "string" && eventId.length > 0 ? eventId : node_crypto.randomUUID();
++				return this.safety.pushAction(`card:${deliveryId}`, evt.chatId, handle);
+ 			},
+ 			"im.message.reaction.created_v1": async (raw) => {
+ 				const evt = normalizeReaction(raw, "added", { includeRaw });
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 708ddbcf0c43b79f01b72d39ba88cd507ff9a02b..952c8284b6f17e1fe4e2c27c8664cb4fbf4cd223 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -6016,11 +6016,15 @@ var LarkChannel = class {
+ 			"card.action.trigger": async (raw) => {
+ 				const evt = normalizeCardAction(raw, { includeRaw });
+ 				if (!evt) return void 0;
+-				const actionId = cardActionId(evt.action);
+-				return this.safety.pushAction(`card:${evt.messageId}:${evt.operator.openId}:${actionId}`, evt.chatId, async () => {
++				// 平台重放使用同一投递标识，用户重新点击则是新的投递。
++				const eventId = raw.event_id ?? raw.header?.event_id ?? raw.token;
++				const handle = async () => {
+ 					const h = this.handlers.cardAction;
+ 					return h ? h(evt) : void 0;
+-				});
++				};
++				// 标识缺失时生成独立投递键，保留队列但不屏蔽真实重试。
++				const deliveryId = typeof eventId === "string" && eventId.length > 0 ? eventId : randomUUID();
++				return this.safety.pushAction(`card:${deliveryId}`, evt.chatId, handle);
+ 			},
+ 			"im.message.reaction.created_v1": async (raw) => {
+ 				const evt = normalizeReaction(raw, "added", { includeRaw });

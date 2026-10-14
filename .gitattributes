@@ -1,0 +1,2 @@
+# 补丁的上下文行以一个空格开头，后接原文件的 tab 缩进。
+patches/*.patch whitespace=-space-before-tab

@@ -30,7 +30,8 @@
     "bin",
     "README.md",
     "README.zh.md",
-    "LICENSE"
+    "LICENSE",
+    "patches"
   ],
   "scripts": {
     "dev": "tsup --watch",
@@ -47,6 +48,7 @@
     "prepare": "npm run build",
     "prepublishOnly": "pnpm typecheck && pnpm build"
   },
+  "bundleDependencies": ["@larksuite/channel"],
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "@larksuite/channel": "^0.6.0",
@@ -96,7 +98,10 @@
     "onlyBuiltDependencies": [
       "esbuild",
       "protobufjs"
-    ]
+    ],
+    "patchedDependencies": {
+      "@larksuite/channel@0.6.0": "patches/@larksuite__channel@0.6.0.patch"
+    }
   },
   "keywords": [
     "feishu",

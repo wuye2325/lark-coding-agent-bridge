@@ -41,7 +41,7 @@ if "$dry_run"; then
     '仅预览，不执行构建、安装或重启：' \
     '1. pnpm typecheck' \
     '2. pnpm build' \
-    '3. npm pack --ignore-scripts（打包到临时目录）' \
+    '3. scripts/pack-release.sh（在临时目录应用 SDK 补丁并打包生产依赖）' \
     '4. npm install --global --ignore-scripts <生成的 tgz>' \
     "5. bash $restart_script"
   exit 0
@@ -56,8 +56,8 @@ pnpm build
 
 # 安装打包产物，避免全局 CLI 链接到工作区；跳过重复构建的生命周期脚本。
 printf '\n打包并更新全局 Bridge：\n'
-package_file="$(npm pack --ignore-scripts --pack-destination "$release_dir")"
-npm install --global --ignore-scripts "$release_dir/$package_file"
+package_path="$(bash "$repo_dir/scripts/pack-release.sh" "$release_dir")"
+npm install --global --ignore-scripts "$package_path"
 
 printf '\n重启机器人后台服务：\n'
 bash "$restart_script"

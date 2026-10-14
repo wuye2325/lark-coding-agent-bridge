@@ -1,4 +1,4 @@
-import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse, NormalizedMessage } from '@larksuite/channel';
 import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,7 +35,7 @@ import { startChannel } from '../../../src/bot/channel.js';
 
 interface MessageHandlerMap {
   message?: (msg: NormalizedMessage) => Promise<void> | void;
-  cardAction?: (evt: CardActionEvent) => Promise<void> | void;
+  cardAction?: (evt: CardActionEvent) => Promise<void | CardActionResponse> | void | CardActionResponse;
 }
 
 interface FakeLarkChannel {
@@ -118,6 +118,10 @@ describe('CardKit 会话续接', () => {
     const registration = await registry.register(token, {
       schema: { type: 'object', properties: { choice: { type: 'string', enum: ['a'] } }, required: ['choice'] },
     });
+    expect(await h.channel.handlers.cardAction?.({
+      messageId: 'om_choice_card', chatId: 'oc_dm', operator: { openId: 'ou_user' },
+      action: { value: { __bridge_cb: true, callback_id: registration.id, choice: 'a' }, tag: 'button' },
+    })).toEqual({ toast: { type: 'info', content: '卡片正在准备，请稍后再点' } });
     await registry.bind(token, registration.id, 'om_choice_card');
     finish.resolve();
     await waitFor(async () => {

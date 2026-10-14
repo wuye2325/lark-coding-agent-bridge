@@ -1,4 +1,4 @@
-import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { ChatModeCache } from '../bot/chat-mode-cache';
@@ -45,7 +45,7 @@ export interface CardDispatchDeps {
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
 }
 
-export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
+export async function handleCardAction(deps: CardDispatchDeps): Promise<void | CardActionResponse> {
   const value = deps.evt.action.value;
   if (!value || typeof value !== 'object') return;
   const payload = value as Record<string, unknown>;
@@ -77,6 +77,9 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       operator: operatorId.slice(-6),
       reason: accessDecision.reason,
     });
+    if (payload.__bridge_cb === true && 'callback_id' in payload && !payload.bridge_token) {
+      return callbackToast('无权操作此卡片');
+    }
     return;
   }
 
@@ -89,12 +92,12 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   if ('callback_id' in payload && !hasLegacyToken) {
     if (payload.__bridge_cb !== true || typeof payload.callback_id !== 'string' || !deps.callbackRegistry) {
       log.warn('callback', 'denied', { scope, reason: 'invalid-registry-callback' });
-      return;
+      return callbackToast('卡片不可用，请重新发起');
     }
     const expected = await registryCallbackContext(deps, scope, threadId, mode, accessDecision);
     if (!expected) {
       log.warn('callback', 'denied', { scope, reason: 'session-or-policy-unavailable' });
-      return;
+      return callbackToast('原会话已不可用，请在当前会话重新发起');
     }
     const { __bridge_cb: _marker, callback_id: _id, bridge_token: _token, ...data } = payload;
     try {
@@ -102,18 +105,19 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
         formValue ? { ...data, form_value: formValue } : data, callbackEventId(deps.evt));
       if (!result.ok) {
         log.warn('callback', 'denied', { scope, action: 'agent_callback', reason: result.reason });
-        return;
+        return callbackDeniedToast(result.reason);
       }
       // 消费落盘期间 /new 或策略命令可能已经执行，入队前再核对来源会话。
       const current = await registryCallbackContext(deps, scope, threadId, mode, accessDecision);
       if (!current || Object.entries(expected).some(([key, value]) => current[key as keyof CallbackExpected] !== value)) {
         log.warn('callback', 'denied', { scope, reason: 'context-changed' });
-        return;
+        return callbackToast('会话状态已变化，请重新发起');
       }
       forwardToAgent(deps, result.data, undefined, scope, threadId, mode);
     } catch (err) {
       log.fail('callback-registry', err, { step: 'consume' });
       log.warn('callback', 'denied', { scope, reason: 'storage-unavailable' });
+      return callbackToast('暂时无法处理此卡片，请稍后重试');
     }
     return;
   }
@@ -175,6 +179,22 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   }
 
   return;
+}
+
+function callbackToast(content: string, type = 'warning'): CardActionResponse {
+  return { toast: { type, content } };
+}
+
+function callbackDeniedToast(reason: string): CardActionResponse {
+  switch (reason) {
+    case 'unbound': return callbackToast('卡片正在准备，请稍后再点', 'info');
+    case 'used': return callbackToast('该选择已处理，请勿重复提交', 'info');
+    case 'event-replay': return callbackToast('该点击已收到，请勿重复提交', 'info');
+    case 'expired': return callbackToast('卡片已过期，请重新发起');
+    case 'schema-mismatch': return callbackToast('提交内容不符合卡片要求，请检查后重试');
+    case 'context-mismatch': return callbackToast('卡片与当前会话或权限不符，请重新发起');
+    default: return callbackToast('卡片不可用，请重新发起');
+  }
 }
 
 function callbackEventId(evt: CardActionEvent): string | undefined {

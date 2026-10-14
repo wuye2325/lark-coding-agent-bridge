@@ -124,7 +124,8 @@ export class CallbackRegistryStore {
       if (!registration) return { ok: false, reason: 'missing' };
       if (registration.used) return { ok: false, reason: 'used' };
       if (registration.expiresAt <= this.now()) return { ok: false, reason: 'expired' };
-      if (!registration.messageId || Object.entries(expected).some(([key, value]) => value !== registration[key as keyof CallbackExpected])) {
+      if (!registration.messageId) return { ok: false, reason: 'unbound' };
+      if (Object.entries(expected).some(([key, value]) => value !== registration[key as keyof CallbackExpected])) {
         return { ok: false, reason: 'context-mismatch' };
       }
       if (Buffer.byteLength(JSON.stringify(data)) > 16384 || !matchesCallbackSchema(registration.schema, data)) {
