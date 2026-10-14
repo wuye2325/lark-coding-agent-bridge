@@ -13,6 +13,67 @@ describe('hash media attachment resolver', () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
+  it('表情消息经 file 资源下载后作为图片附件提供', async () => {
+    const root = await tempDir();
+    const cache = new MediaCache({
+      async downloadResourceToFile(messageId: string, fileKey: string, type: string, dest: string) {
+        expect({ messageId, fileKey, type }).toEqual({
+          messageId: 'om_sticker', fileKey: 'sticker_key', type: 'file',
+        });
+        await writeFile(dest, 'sticker-image');
+        return { contentType: 'image/gif', bytesWritten: 13 };
+      },
+    } as never, root);
+
+    const [attachment] = await cache.resolve([{
+      messageId: 'om_sticker',
+      resource: { type: 'sticker', fileKey: 'sticker_key' } as never,
+    }]);
+
+    expect(attachment).toMatchObject({ kind: 'image', mime: 'image/gif', decision: 'accepted' });
+    expect(await readFile(attachment!.absPath, 'utf8')).toBe('sticker-image');
+  });
+
+  it.each([
+    { mime: 'image/svg+xml', options: {}, reason: 'unsupported-image-mime' },
+    { mime: 'image/png', options: { imageMaxBytes: 1 }, reason: 'image-too-large' },
+    { mime: 'image/png', options: { maxFileBytes: 1 }, reason: 'file-too-large' },
+    { mime: 'image/png', options: { maxBytes: 1 }, reason: 'run-too-large' },
+    { mime: 'image/png', options: { maxCount: 0 }, reason: 'too-many-attachments' },
+  ])('表情消息沿用图片策略：$reason', async ({ mime, options, reason }) => {
+    const root = await tempDir();
+    const cache = new MediaCache({
+      async downloadResourceToFile(_id: string, _key: string, _type: string, dest: string) {
+        await writeFile(dest, 'sticker-image');
+        return { contentType: mime };
+      },
+    } as never, root);
+    const [attachment] = await cache.resolve([{
+      messageId: 'om_sticker', resource: { type: 'sticker', fileKey: 'sticker_key' } as never,
+    }], options);
+
+    expect(attachment).toMatchObject({ kind: 'image', decision: 'rejected', rejectionReason: reason });
+    await expect(stat(attachment!.absPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('普通图片文件继续接受，音视频继续跳过', async () => {
+    const root = await tempDir();
+    const cache = new MediaCache({
+      async downloadResourceToFile(_id: string, key: string, _type: string, dest: string) {
+        await writeFile(dest, key);
+        return { contentType: key === 'image' ? 'image/png' : 'application/octet-stream' };
+      },
+    } as never, root);
+    const attachments = await cache.resolve(['image', 'file', 'audio', 'video'].map((type) => ({
+      messageId: 'om_media', resource: { type, fileKey: type } as never,
+    })));
+
+    expect(attachments.map(({ kind, decision }) => ({ kind, decision }))).toEqual([
+      { kind: 'image', decision: 'accepted' }, { kind: 'file', decision: 'accepted' },
+      { kind: 'audio', decision: 'skipped' }, { kind: 'video', decision: 'skipped' },
+    ]);
+  });
+
   it('downloads message resources into content-hash paths without original names or file keys', async () => {
     const root = await tempDir();
     const bytes = Buffer.from('image-bytes');
