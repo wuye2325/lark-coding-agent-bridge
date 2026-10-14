@@ -1,6 +1,6 @@
 # Reaction 与 sticker 需求对齐
 
-状态：用户已确认整体方案；最终决策已回填 GitHub Issues #3、#4 正文，尚未进入实现。
+状态：已实现并完成验证；集成分支 `codex/reaction-sticker`，交付见 [PR #5](https://github.com/wuye2325/lark-coding-agent-bridge/pull/5)。
 
 需求来源：[GitHub Issue #3（reaction）](https://github.com/wuye2325/lark-coding-agent-bridge/issues/3) 与 [GitHub Issue #4（sticker）](https://github.com/wuye2325/lark-coding-agent-bridge/issues/4)。后续实现以更新后的 issue 正文为准。
 术语见根目录 `GLOSSARY.md`。
@@ -46,3 +46,19 @@
 ## 对齐结果
 
 用户已确认整体方案，访谈结束；未决产品问题为空。
+
+## 实现验证
+
+- `pnpm test --reporter=dot --silent`：107 个文件、764 项测试通过。
+- `pnpm typecheck`、`pnpm build`、`git diff --check` 通过。
+- TDD 与专项验收证据见 `reaction-validation.md`、`sticker-validation.md`。
+- 同一目标消息的并发表情事件使用处理期间的内存链保序，结束释放；ack 请求不阻塞后续事件。
+- 未部署真实飞书应用；启用 reaction 仍需按 issue #3 配置读取权限及添加、撤回两个事件订阅。
+
+## Standards
+
+以实现前的 `15dbb27` 为固定点，独立审查与修复复审均为 0 项发现。
+
+## Spec
+
+最终 0 项未解决发现。已修复并发反查导致添加、撤回输入次序颠倒的问题；新增测试覆盖同目标保序、无关目标独立处理与慢 ack。
