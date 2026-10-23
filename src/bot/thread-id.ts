@@ -35,3 +35,23 @@ export async function lookupMessageThreadId(
     return undefined;
   }
 }
+
+/** 终态动作必须确认 carrier ID 和 thread_id；失败由调用方反馈，字段缺省表示群级 scope。 */
+export async function lookupMessageThreadIdOrThrow(
+  channel: LarkChannel,
+  messageId: string,
+): Promise<string | undefined> {
+  const [parent] = await channel.fetchRawMessage(messageId);
+  if (!parent || typeof parent !== 'object' || Array.isArray(parent)) {
+    throw new Error('carrier 消息不存在');
+  }
+  const item = parent as unknown as { message_id?: unknown; thread_id?: unknown };
+  if (item.message_id !== messageId) {
+    throw new Error('carrier 消息 ID 不符');
+  }
+  if (item.thread_id === undefined) return undefined;
+  if (typeof item.thread_id !== 'string' || item.thread_id.length === 0) {
+    throw new Error('carrier thread_id 类型无效');
+  }
+  return item.thread_id;
+}

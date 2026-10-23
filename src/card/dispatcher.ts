@@ -7,7 +7,7 @@ import type { ProcessPool } from '../bot/process-pool';
 import type { CallbackAuth } from './callback-auth';
 import type { CallbackExpected, CallbackRegistryStore } from './callback-registry';
 import type { AccessDecision } from '../policy/access';
-import { runCommandHandler, type CommandContext, type Controls } from '../commands';
+import { resetCurrentSession, runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
@@ -15,7 +15,7 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
-import { lookupMessageThreadId } from '../bot/thread-id';
+import { lookupMessageThreadId, lookupMessageThreadIdOrThrow } from '../bot/thread-id';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -47,11 +47,14 @@ export interface CardDispatchDeps {
 
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void | CardActionResponse> {
   const value = deps.evt.action.value;
-  if (!value || typeof value !== 'object') return;
+  if (!value || typeof value !== 'object') {
+    return callbackToast('未知卡片操作，请重新打开结果卡片');
+  }
   const payload = value as Record<string, unknown>;
 
   const operatorId = deps.evt.operator.openId;
   const chatId = deps.evt.chatId;
+  const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
 
   // CardKit 2.0 form submits drop user-input values from action.value; they
   // arrive on raw.action.form_value. The SDK forwards the raw event when
@@ -66,7 +69,11 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
   // session — look up the carrier message (the card lives on it) once.
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
-  const { scope, threadId, mode } = await resolveScope(deps);
+  const resolvedScope = await resolveScope(deps, isTerminalAction(cmd));
+  if ('error' in resolvedScope) {
+    return callbackToast('无法确认卡片所属话题，请稍后重试');
+  }
+  const { scope, threadId, mode } = resolvedScope;
 
   const accessDecision =
     mode === 'p2p'
@@ -77,10 +84,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
       operator: operatorId.slice(-6),
       reason: accessDecision.reason,
     });
-    if (payload.__bridge_cb === true && 'callback_id' in payload && !payload.bridge_token) {
-      return callbackToast('无权操作此卡片');
-    }
-    return;
+    return callbackToast('无权操作此卡片');
   }
 
   if (LEGACY_CLAUDE_CALLBACK_MARKER in payload) {
@@ -122,13 +126,59 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
     return;
   }
 
-  const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
+  if (cmd === 'prompt.test' || cmd === 'prompt.diff') {
+    if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
+      return;
+    }
+    const prompt = cmd === 'prompt.test'
+      ? '运行当前项目的单元测试并报告结果'
+      : '查看 git diff 变更并总结改动要点';
+    try {
+      deps.pending.push(scope, {
+        messageId: deps.evt.messageId,
+        chatId,
+        chatType: mode === 'p2p' ? 'p2p' : 'group',
+        threadId,
+        senderId: operatorId,
+        senderName: deps.evt.operator.name,
+        content: prompt,
+        rawContentType: 'text',
+        resources: [],
+        mentions: [],
+        mentionAll: false,
+        mentionedBot: false,
+        createTime: Date.now(),
+      });
+      return callbackToast('已加入待执行队列', 'info');
+    } catch (err) {
+      log.fail('cardAction', err, { cmd, scope, step: 'queue-terminal-prompt' });
+      return callbackToast('加入待执行队列失败，请稍后重试');
+    }
+  }
+
   if (cmd) {
     if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
       return;
     }
     log.info('cardAction', 'cmd', { cmd, scope });
     const msg = makeFakeMsg(deps.evt, threadId);
+    if (cmd === 'session.new') deps.pending.cancel(scope);
+
+    let sessionCatalogIdentity: CommandContext['sessionCatalogIdentity'];
+    try {
+      sessionCatalogIdentity = await commandSessionCatalogIdentity({
+        msg,
+        scope,
+        mode,
+        workspaces: deps.workspaces,
+        controls: deps.controls,
+        access: accessDecision,
+      });
+    } catch (err) {
+      log.fail('cardAction', err, { cmd, scope, step: 'session-context' });
+      if (cmd === 'session.new') return callbackToast('新会话失败，请稍后重试');
+      return callbackToast('此卡片操作暂时失败，请稍后重试');
+    }
 
     const ctx: CommandContext = {
       channel: deps.channel,
@@ -137,14 +187,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
       chatMode: mode,
       sessions: deps.sessions,
       sessionCatalog: deps.sessionCatalog,
-      sessionCatalogIdentity: await commandSessionCatalogIdentity({
-        msg,
-        scope,
-        mode,
-        workspaces: deps.workspaces,
-        controls: deps.controls,
-        access: accessDecision,
-      }),
+      sessionCatalogIdentity,
       workspaces: deps.workspaces,
       activeRuns: deps.activeRuns,
       agent: deps.agent,
@@ -155,15 +198,32 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
       fromCardAction: true,
     };
 
+    if (cmd === 'session.new') {
+      try {
+        const wasRunning = resetCurrentSession(ctx);
+        return callbackToast(
+          wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。',
+          'success',
+        );
+      } catch (err) {
+        log.fail('cardAction', err, { cmd, scope, step: 'reset-session' });
+        return callbackToast('新会话失败，请稍后重试');
+      }
+    }
+
     const [name, ...rest] = cmd.split('.');
     const sub = rest.join(' ');
     const args = composeArgs(sub, payload);
 
     try {
       const ok = await runCommandHandler(name ?? '', args, ctx);
-      if (!ok) log.warn('cardAction', 'unknown', { cmd });
+      if (!ok) {
+        log.warn('cardAction', 'unknown', { cmd });
+        return callbackToast('未知快捷操作，请重新打开结果卡片');
+      }
     } catch (err) {
       log.fail('cardAction', err, { cmd });
+      return callbackToast('此卡片操作失败，请稍后重试');
     }
     return;
   }
@@ -178,7 +238,11 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
     return;
   }
 
-  return;
+  return callbackToast('未知卡片操作，请重新打开结果卡片');
+}
+
+function isTerminalAction(cmd: string): boolean {
+  return cmd === 'prompt.test' || cmd === 'prompt.diff' || cmd === 'session.new';
 }
 
 function callbackToast(content: string, type = 'warning'): CardActionResponse {
@@ -227,14 +291,31 @@ async function registryCallbackContext(
 
 async function resolveScope(
   deps: CardDispatchDeps,
-): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
+  requireReliableThread = false,
+): Promise<
+  | { scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }
+  | { error: 'thread-lookup-failed' }
+> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
   if (mode === 'p2p') {
     return { scope: chatId, threadId: undefined, mode };
   }
   // 与消息管线一致：群聊以卡片消息的 thread_id 为准，chat_mode 可能仍为 group。
-  const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
+  let threadId: string | undefined;
+  if (requireReliableThread) {
+    try {
+      threadId = await lookupMessageThreadIdOrThrow(deps.channel, deps.evt.messageId);
+    } catch (err) {
+      log.warn('thread', 'thread-id-lookup-failed', {
+        messageId: deps.evt.messageId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return { error: 'thread-lookup-failed' };
+    }
+  } else {
+    threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
+  }
   if (!threadId) {
     // Fall back to plain chatId. Better to land in the chat's "default"
     // scope than fail the click silently.

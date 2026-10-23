@@ -187,6 +187,30 @@ describe('run card renderer snapshots', () => {
     });
   });
 
+  it('终态卡片提供固定快捷动作，运行中仍只展示签名终止动作', () => {
+    const terminal = JSON.stringify(renderCard(stateFrom([
+      { type: 'text', delta: '完成' },
+      { type: 'done', terminationReason: 'normal' },
+    ])));
+    expect(terminal).toContain('运行单测');
+    expect(terminal).toContain('查看 Diff');
+    expect(terminal).toContain('新会话');
+    expect(terminal).toContain('💡 快捷按钮将在当前会话中执行');
+    expect(terminal).toContain('"cmd":"prompt.test"');
+    expect(terminal).toContain('"cmd":"prompt.diff"');
+    expect(terminal).toContain('"cmd":"session.new"');
+    expect(terminal).not.toContain('__bridge_cb');
+    expect(terminal).not.toContain('bridge_token');
+
+    const running = JSON.stringify(renderCard(initialState, {
+      signCallback: (action) => `token-for-${action}`,
+    }));
+    expect(running).toContain('"cmd":"stop"');
+    expect(running).not.toContain('prompt.test');
+    expect(running).not.toContain('prompt.diff');
+    expect(running).not.toContain('session.new');
+  });
+
   it('keeps local paths in user-visible cards and text fallbacks', () => {
     const sensitivePath = '/Users/example/private/customer/repo/secret.txt';
     const state = stateFrom([
