@@ -126,6 +126,13 @@ interface CotEvent {
   timestamp: number;
 }
 
+const COT_TOOL_EVENT_TYPES = new Set([
+  'TOOL_CALL_START',
+  'TOOL_CALL_ARGS',
+  'TOOL_CALL_END',
+  'TOOL_CALL_RESULT',
+]);
+
 export class CotPublisher {
   private readonly client: Pick<CotClient, 'create' | 'update' | 'complete'>;
   readonly chatId: string;
@@ -133,6 +140,8 @@ export class CotPublisher {
   readonly runId: string;
   readonly scope: string;
   readonly inputPreview: string;
+  private readonly showTools: () => boolean;
+  private readonly visibleToolCalls = new Set<string>();
   ref: CotRef | undefined;
   disabled = false;
   degradedReason: string | undefined;
@@ -147,6 +156,7 @@ export class CotPublisher {
     runId: string;
     scope: string;
     inputPreview: string;
+    showTools?: () => boolean;
   }) {
     this.client = opts.client;
     this.chatId = opts.chatId;
@@ -154,6 +164,7 @@ export class CotPublisher {
     this.runId = opts.runId;
     this.scope = opts.scope;
     this.inputPreview = opts.inputPreview;
+    this.showTools = opts.showTools ?? (() => true);
   }
 
   async start(): Promise<void> {
@@ -233,7 +244,8 @@ export class CotPublisher {
       if (this.buffer.length > 0 && !this.disabled) await this.flush();
       return;
     }
-    const events = this.buffer.splice(0);
+    const buffered = this.buffer.splice(0);
+    const events = this.visibleEvents(buffered);
     if (events.length === 0) return;
     this.flushing = this.client.update(this.ref, events)
       .catch((err) => {
@@ -246,6 +258,42 @@ export class CotPublisher {
         if (this.buffer.length > 0 && !this.disabled) this.scheduleFlush();
       });
     await this.flushing;
+  }
+
+  private visibleEvents(buffered: CotEvent[]): CotEvent[] {
+    if (!this.showTools()) {
+      return buffered.filter((event) => !COT_TOOL_EVENT_TYPES.has(event.event_type));
+    }
+
+    const visibleToolCalls = new Set(this.visibleToolCalls);
+    const events: CotEvent[] = [];
+    for (const event of buffered) {
+      if (!COT_TOOL_EVENT_TYPES.has(event.event_type)) {
+        events.push(event);
+        continue;
+      }
+      const toolCallId = toolCallIdFromEvent(event);
+      if (!toolCallId) continue;
+      if (event.event_type === 'TOOL_CALL_START') {
+        visibleToolCalls.add(toolCallId);
+        events.push(event);
+      } else if (visibleToolCalls.has(toolCallId)) {
+        events.push(event);
+        if (event.event_type === 'TOOL_CALL_RESULT') visibleToolCalls.delete(toolCallId);
+      }
+    }
+    this.visibleToolCalls.clear();
+    for (const id of visibleToolCalls) this.visibleToolCalls.add(id);
+    return events;
+  }
+}
+
+function toolCallIdFromEvent(event: CotEvent): string | undefined {
+  try {
+    const payload = JSON.parse(event.content) as { toolCallId?: unknown };
+    return typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -263,7 +311,7 @@ export function finalAnswerOnlyState(state: RunState): RunState {
 export async function consumeCotEvents(
   events: AsyncIterable<AgentEvent>,
   publisher: CotPublisher,
-  opts: { detail: CotMessagesMode },
+  opts: { detail: CotMessagesMode; showTools?: () => boolean },
 ): Promise<void> {
   let reasoningOpen = false;
   let textStepOpen = false;
@@ -294,6 +342,7 @@ export async function consumeCotEvents(
         continue;
       }
       if (evt.type === 'tool_use') {
+        if (!showTools()) continue;
         closeReasoningIfNeeded();
         closeTextIfNeeded();
         const toolCallId = evt.id;
@@ -317,8 +366,13 @@ export async function consumeCotEvents(
         continue;
       }
       if (evt.type === 'tool_result') {
+        if (!showTools()) {
+          toolBrief.delete(evt.id);
+          continue;
+        }
         const detailed = opts.detail === 'detailed';
         const brief = toolBrief.get(evt.id);
+        if (!brief) continue;
         publisher.enqueue('TOOL_CALL_RESULT', {
           messageId: `tool-result-${evt.id}`,
           toolCallId: evt.id,
@@ -390,6 +444,10 @@ export async function consumeCotEvents(
     reasoningOpen = false;
     publisher.enqueue('REASONING_MESSAGE_END', { messageId: reasoningMessageId });
     publisher.enqueue('REASONING_END', { messageId: reasoningMessageId });
+  }
+
+  function showTools(): boolean {
+    return opts.showTools?.() ?? true;
   }
 
   function closeTextIfNeeded(): void {
