@@ -1277,12 +1277,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            if (renderText(filterForPrefs(state)).trim() === '') return;
-            await channel.send(
+            await sendFinalReply({
+              channel,
               chatId,
-              { card: renderCard(filterForPrefs(state), renderOptionsForState(state)) },
+              scope,
+              state: filterForPrefs(state),
+              replyMode,
               sendOpts,
-            );
+              cardRenderOptions: renderOptionsForState(state),
+            });
           },
         });
       } catch (err) {

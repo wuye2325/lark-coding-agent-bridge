@@ -188,6 +188,61 @@ describe('run card renderer snapshots', () => {
     expect(displayedOutput).not.toContain('TAIL_MARKER');
   });
 
+  it('prioritizes short and long final answers ahead of oversized Agent diagnostics', () => {
+    const finalAnswers = [
+      { content: 'FINAL_RESULT_SHOULD_REMAIN：这是需要保留的最终答复。', truncated: false },
+      { content: `LONG_RESULT_SHOULD_REMAIN ${'长正文内容'.repeat(7_000)}`, truncated: true },
+    ];
+
+    for (const answer of finalAnswers) {
+      const state: RunState = {
+        blocks: [{ kind: 'text', content: answer.content, streaming: false }],
+        finalText: answer.content,
+        reasoning: { content: '', active: false },
+        footer: null,
+        terminal: 'error',
+        errorMsg: '异常诊断内容'.repeat(650),
+      };
+      const card = renderCard(state, {
+        agentName: '🤖 Claude Code',
+        workspaceName: 'demo',
+        durationMs: 1_200,
+        toolStats: { total: 1, succeeded: 0, errors: 1 },
+        firstToolError: {
+          id: 'e',
+          name: 'Bash',
+          input: { command: 'example' },
+          status: 'error',
+          output: '工具错误'.repeat(400),
+        },
+        showToolDetails: true,
+      }) as {
+        header?: { text_tag_list?: Array<{ text?: { content?: string } }> };
+        body?: {
+          elements?: Array<{
+            tag?: string;
+            columns?: Array<{
+              elements?: Array<{ behaviors?: Array<{ value?: { cmd?: string } }> }>;
+            }>;
+          }>;
+        };
+      };
+      const cardJson = JSON.stringify(card);
+      const actionColumnSet = card.body?.elements?.find((element) => element.tag === 'column_set');
+      const actionCommands = actionColumnSet?.columns?.flatMap((column) =>
+        column.elements?.flatMap((element) => element.behaviors?.map((behavior) => behavior.value?.cmd) ?? []) ?? [],
+      );
+
+      expect(Buffer.byteLength(cardJson, 'utf8')).toBeLessThan(15_000);
+      expect(cardJson).toContain(answer.truncated ? answer.content.slice(0, 80) : answer.content);
+      expect(card.header?.text_tag_list?.[0]?.text?.content).toBe('运行失败');
+      expect(cardJson).toContain('工具错误');
+      expect(cardJson).toContain('Agent 错误因载荷预算截断');
+      if (answer.truncated) expect(cardJson).toContain('正文因载荷预算截断');
+      expect(actionCommands).toEqual(['prompt.test', 'prompt.diff', 'session.new']);
+    }
+  });
+
   it('keeps the complete result card below 15 KB while retaining the answer, status, and key error', () => {
     const finalAnswer = `PRIMARY_ANSWER ${'结果'.repeat(7_000)} user@example.com`;
     const events: AgentEvent[] = [

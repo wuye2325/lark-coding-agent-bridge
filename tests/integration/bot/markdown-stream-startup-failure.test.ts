@@ -426,7 +426,7 @@ describe('markdown stream startup failures', () => {
 
     await h.channel.handlers.message?.(message('om_no_final', 'run'));
     await waitFor(() => visibleProgress.some((markdown) => markdown.includes('这是答案')));
-    // give the terminal result card a chance to arrive before asserting
+    // 留出时间让终态结果卡片送达，再执行断言。
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     expect(h.channel.sent).toHaveLength(1);
@@ -1124,6 +1124,56 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).toContain('交互卡片最终答复');
     expect(resultJson).toContain('工具调用：1 次 · 成功 1 · 错误 0');
     expect(resultJson).not.toMatch(/Bash|hidden card command|hidden card output/);
+  });
+
+  it('Claude card 回退在正文为空时仍发送终态与工具错误统计', async () => {
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'card',
+      showToolCalls: false,
+      cotMessages: 'off',
+      events: [
+        { type: 'tool_use', id: 'hidden-failed-tool', name: 'Bash', input: { command: 'hidden command' } },
+        { type: 'tool_result', id: 'hidden-failed-tool', output: 'hidden output', isError: true },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_claude_empty_card', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_claude_empty_card' });
+    const resultJson = JSON.stringify(h.channel.sent[0]?.content);
+    expect(resultJson).toContain('已完成 · 1 次工具错误');
+    expect(resultJson).toContain('工具调用：1 次 · 成功 0 · 错误 1');
+    expect(resultJson).not.toMatch(/Bash|hidden command|hidden output/);
+  });
+
+  it('Claude card 回退缺少消息回执时不记录已送达', async () => {
+    const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {});
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'card',
+      showToolCalls: false,
+      cotMessages: 'off',
+      events: [
+        { type: 'tool_use', id: 'hidden-failed-tool', name: 'Bash', input: { command: 'hidden command' } },
+        { type: 'tool_result', id: 'hidden-failed-tool', output: 'hidden output', isError: true },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      send: async () => ({ messageId: '' }),
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_claude_card_no_receipt', 'run'));
+    await waitFor(() => fail.mock.calls.some(
+      (call) => call[1] instanceof Error && call[1].message.includes('missing message receipt'),
+    ));
+
+    expect(info.mock.calls.some((call) => call[0] === 'outbound' && call[1] === 'sent')).toBe(false);
   });
 
   it('纯文本模式下隐藏工具细节并保留文字最终答复', async () => {

@@ -317,6 +317,7 @@ export async function consumeCotEvents(
   let textMessageOpen = false;
   let textMessageIndex = 0;
   let textMessageId: string | undefined;
+  const pendingTextDeltas: string[] = [];
   const toolBrief = new Map<string, { name: string; input: unknown }>();
   const reasoningMessageId = `reasoning-${publisher.runId}`;
   const understandStep = { stepId: `step-understand-${publisher.runId}`, stepName: '理解用户问题' };
@@ -328,6 +329,7 @@ export async function consumeCotEvents(
     for await (const evt of events) {
       if (evt.type === 'system' || evt.type === 'usage') continue;
       if (evt.type === 'thinking') {
+        flushPendingText();
         closeTextIfNeeded();
         moveToStep(processStep);
         if (!reasoningOpen) {
@@ -345,6 +347,7 @@ export async function consumeCotEvents(
         continue;
       }
       if (evt.type === 'tool_use') {
+        flushPendingText();
         closeReasoningIfNeeded();
         closeTextIfNeeded();
         moveToStep(processStep);
@@ -370,6 +373,7 @@ export async function consumeCotEvents(
         continue;
       }
       if (evt.type === 'tool_result') {
+        flushPendingText();
         closeReasoningIfNeeded();
         closeTextIfNeeded();
         moveToStep(processStep);
@@ -396,24 +400,18 @@ export async function consumeCotEvents(
       if (evt.type === 'text') {
         closeReasoningIfNeeded();
         moveToStep(processStep);
-        if (!textMessageOpen) {
-          textMessageOpen = true;
-          textMessageId = `text-${publisher.runId}-${++textMessageIndex}`;
-          publisher.enqueue('TEXT_MESSAGE_START', { messageId: textMessageId, role: 'assistant' });
-        }
-        publisher.enqueue('TEXT_MESSAGE_CONTENT', {
-          messageId: textMessageId,
-          delta: truncateCot(evt.delta, COT_TEXT_MAX),
-        });
+        pendingTextDeltas.push(evt.delta);
         continue;
       }
       if (evt.type === 'final_text') {
+        flushPendingText(evt.content);
         closeReasoningIfNeeded();
         closeTextIfNeeded();
         moveToStep(resultsStep);
         continue;
       }
       if (evt.type === 'done' || evt.type === 'error') {
+        flushPendingText();
         closeReasoningIfNeeded();
         closeTextIfNeeded();
         finishStep();
@@ -432,12 +430,14 @@ export async function consumeCotEvents(
         return;
       }
     }
+    flushPendingText();
     closeReasoningIfNeeded();
     closeTextIfNeeded();
     finishStep();
     await publisher.finish('done');
   } catch (err) {
     log.warn('cot', 'consume-failed', { err: err instanceof Error ? err.message : String(err) });
+    flushPendingText();
     closeReasoningIfNeeded();
     closeTextIfNeeded();
     finishStep();
@@ -455,6 +455,37 @@ export async function consumeCotEvents(
     if (!activeStep) return;
     publisher.enqueue('STEP_FINISHED', activeStep);
     activeStep = undefined;
+  }
+
+  function flushPendingText(finalAnswer?: string): void {
+    if (pendingTextDeltas.length === 0) return;
+    const pendingText = pendingTextDeltas.join('');
+    const matchingFinalLength = finalAnswer && pendingText.endsWith(finalAnswer)
+      ? Array.from(finalAnswer).length
+      : 0;
+    let remaining = Array.from(pendingText).length - matchingFinalLength;
+    for (const delta of pendingTextDeltas) {
+      if (remaining <= 0) break;
+      const characters = Array.from(delta);
+      const visible = characters.length > remaining
+        ? characters.slice(0, remaining).join('')
+        : delta;
+      if (visible) publishTextDelta(visible);
+      remaining -= Array.from(visible).length;
+    }
+    pendingTextDeltas.length = 0;
+  }
+
+  function publishTextDelta(delta: string): void {
+    if (!textMessageOpen) {
+      textMessageOpen = true;
+      textMessageId = `text-${publisher.runId}-${++textMessageIndex}`;
+      publisher.enqueue('TEXT_MESSAGE_START', { messageId: textMessageId, role: 'assistant' });
+    }
+    publisher.enqueue('TEXT_MESSAGE_CONTENT', {
+      messageId: textMessageId,
+      delta: truncateCot(delta, COT_TEXT_MAX),
+    });
   }
 
   function closeReasoningIfNeeded(): void {

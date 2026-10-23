@@ -245,13 +245,13 @@ function fitCardPayload<T extends { body: { elements: object[] }; header?: unkno
     current = measure();
   }
 
-  if (current.bytes >= CARD_BUDGET_BYTES && refs.answerElement) {
-    fitMarkdownContent(card, refs.answerElement, refs.answerElement.content, '正文');
+  if (current.bytes >= CARD_BUDGET_BYTES && refs.agentErrorElement) {
+    fitMarkdownContent(card, refs.agentErrorElement, refs.agentErrorElement.content, 'Agent 错误');
     current = measure();
   }
 
-  if (current.bytes >= CARD_BUDGET_BYTES && refs.agentErrorElement) {
-    fitMarkdownContent(card, refs.agentErrorElement, refs.agentErrorElement.content, 'Agent 错误');
+  if (current.bytes >= CARD_BUDGET_BYTES && refs.answerElement) {
+    fitMarkdownContent(card, refs.answerElement, refs.answerElement.content, '正文');
     current = measure();
   }
 
