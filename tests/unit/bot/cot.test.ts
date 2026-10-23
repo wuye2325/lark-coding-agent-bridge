@@ -65,6 +65,127 @@ describe('COT event mapping', () => {
     expect(JSON.parse(result?.content ?? '{}').content).toBe('workspace');
   });
 
+  it('suppresses all tool details from native CoT while tool display is hidden', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-hidden-tools',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+    });
+    await publisher.start();
+
+    await consumeCotEvents(iterate([
+      { type: 'tool_use', id: 'tool-secret', name: 'Bash', input: { command: 'private command' } },
+      { type: 'tool_result', id: 'tool-secret', output: 'private output', isError: true },
+      { type: 'text', delta: '仍展示安全的过程文本' },
+      { type: 'done', terminationReason: 'normal' },
+    ]), publisher, { detail: 'detailed', showTools: () => false });
+
+    expect(client.events.map((event) => event.event_type)).not.toContain('TOOL_CALL_START');
+    expect(client.events.map((event) => event.event_type)).not.toContain('TOOL_CALL_ARGS');
+    expect(client.events.map((event) => event.event_type)).not.toContain('TOOL_CALL_RESULT');
+    expect(JSON.stringify(client.events)).not.toMatch(/Bash|private command|private output/);
+    expect(JSON.stringify(client.events)).toContain('仍展示安全的过程文本');
+  });
+
+  it('applies tool visibility changes to the next CoT tool event', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-hot-tool-visibility',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+    });
+    await publisher.start();
+    const visibility = { showTools: false };
+    const events = (async function* (): AsyncIterable<AgentEvent> {
+      yield { type: 'tool_use', id: 'tool-hidden', name: 'Bash', input: { command: 'hidden command' } };
+      visibility.showTools = true;
+      yield { type: 'tool_result', id: 'tool-hidden', output: 'hidden output', isError: false };
+      yield { type: 'tool_use', id: 'tool-visible', name: 'Read', input: { file_path: 'visible.ts' } };
+      yield { type: 'tool_result', id: 'tool-visible', output: 'visible output', isError: false };
+      yield { type: 'done', terminationReason: 'normal' };
+    })();
+
+    await consumeCotEvents(events, publisher, {
+      detail: 'detailed',
+      showTools: () => visibility.showTools,
+    });
+
+    const payload = JSON.stringify(client.events);
+    expect(payload).toContain('Read');
+    expect(payload).toContain('visible.ts');
+    expect(payload).toContain('visible output');
+    expect(payload).not.toMatch(/Bash|hidden command|hidden output/);
+    expect(client.events.some((event) =>
+      event.event_type === 'TOOL_CALL_RESULT' &&
+      JSON.parse(event.content).toolCallId === 'tool-hidden',
+    )).toBe(false);
+  });
+
+  it('drops queued tool details when hiding them before the CoT update is sent', async () => {
+    const client = new FakeCotClient();
+    const visibility = { showTools: true };
+    const showTools = () => visibility.showTools;
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-hidden-before-flush',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+      showTools,
+    });
+    await publisher.start();
+    const events = (async function* (): AsyncIterable<AgentEvent> {
+      yield { type: 'tool_use', id: 'tool-pending', name: 'Bash', input: { command: 'queued secret' } };
+      visibility.showTools = false;
+      yield { type: 'done', terminationReason: 'normal' };
+    })();
+
+    await consumeCotEvents(events, publisher, { detail: 'detailed', showTools });
+
+    expect(client.events.filter((event) => event.event_type.startsWith('TOOL_CALL_'))).toEqual([]);
+    expect(JSON.stringify(client.events)).not.toMatch(/Bash|queued secret/);
+    expect(client.completed).toEqual(['done']);
+  });
+
+  it('does not publish a result for a tool start dropped at the update boundary', async () => {
+    const client = new FakeCotClient();
+    const visibility = { showTools: true };
+    const showTools = () => visibility.showTools;
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-dropped-tool-start',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+      showTools,
+    });
+    await publisher.start();
+    const events = (async function* (): AsyncIterable<AgentEvent> {
+      yield { type: 'tool_use', id: 'tool-dropped', name: 'Bash', input: { command: 'queued command' } };
+      visibility.showTools = false;
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      visibility.showTools = true;
+      yield { type: 'tool_result', id: 'tool-dropped', output: 'late result', isError: false };
+      yield { type: 'done', terminationReason: 'normal' };
+    })();
+
+    await consumeCotEvents(events, publisher, { detail: 'brief', showTools });
+
+    const toolEvents = client.events.filter((event) => event.event_type.startsWith('TOOL_CALL_'));
+    expect(toolEvents).toEqual([]);
+    expect(JSON.stringify(client.events)).not.toMatch(/Bash|queued command|late result/);
+    expect(client.completed).toEqual(['done']);
+  });
+
   it('derives final answer state from text blocks only', () => {
     const state: RunState = {
       blocks: [

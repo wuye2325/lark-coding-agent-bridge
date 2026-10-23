@@ -42,6 +42,7 @@ interface FakeLarkChannel {
   botIdentity: { openId: string; name: string };
   handlers: MessageHandlerMap;
   sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
+  recalled: string[];
   rawClient: {
     request: ReturnType<typeof vi.fn>;
     application: {
@@ -69,7 +70,8 @@ interface FakeLarkChannel {
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
   send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
-  stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
+  stream(chatId: string, input: unknown, options?: unknown): Promise<unknown>;
+  recallMessage(messageId: string): Promise<void>;
   addReaction(messageId: string, emojiType: string): Promise<string>;
   removeReaction(messageId: string, reactionId: string): Promise<void>;
 }
@@ -183,8 +185,9 @@ describe('markdown stream startup failures', () => {
         path: { message_id: 'om_first', reaction_id: 'reaction_1' },
       }),
     );
-    expect(lastMarkdown(h.channel)).toContain('agent 失败');
-    expect(lastMarkdown(h.channel)).toContain('codex exited with code 1');
+    const sentCards = JSON.stringify(h.channel.sent.map((entry) => entry.content));
+    expect(sentCards).toContain('agent 失败');
+    expect(sentCards).toContain('codex exited with code 1');
   });
 
   it('does not wait for the working reaction before draining a failed agent run', async () => {
@@ -200,7 +203,7 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_second', 'second'));
     await waitFor(() => h.agent.runOptions.length === 2, 1000);
 
-    expect(lastMarkdown(h.channel)).toContain('agent 失败');
+    expect(JSON.stringify(h.channel.sent.map((entry) => entry.content))).toContain('agent 失败');
 
     reaction.resolve({ data: { reaction_id: 'reaction_1' } });
     await waitFor(() => h.channel.rawClient.im.v1.messageReaction.delete.mock.calls.length > 0);
@@ -285,7 +288,7 @@ describe('markdown stream startup failures', () => {
 
     expect(visibleProgress.some((markdown) => markdown.includes('progress update'))).toBe(true);
     expect(h.channel.sent).toHaveLength(1);
-    expect(lastMarkdown(h.channel)).toContain('FINAL_SENTINEL');
+    expect(lastCard(h.channel)).toContain('FINAL_SENTINEL');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
   });
 
@@ -394,10 +397,10 @@ describe('markdown stream startup failures', () => {
 
     expect(streamCalls).toHaveLength(0);
     expect(h.channel.sent).toHaveLength(1);
-    expect(lastMarkdown(h.channel)).toContain('FINAL_ONLY_SENTINEL');
+    expect(lastCard(h.channel)).toContain('FINAL_ONLY_SENTINEL');
   });
 
-  it('does not repeat streamed text as the final reply when Codex held nothing back', async () => {
+  it('does not repeat streamed text in the result card when Codex held nothing back', async () => {
     // Codex only reserves its *last* message as `final_text`; an abnormal turn
     // end (turn.failed, or the process dying before turn.completed) flushes it
     // as a text block instead. Those blocks are already on screen, so the
@@ -423,10 +426,12 @@ describe('markdown stream startup failures', () => {
 
     await h.channel.handlers.message?.(message('om_no_final', 'run'));
     await waitFor(() => visibleProgress.some((markdown) => markdown.includes('这是答案')));
-    // give a (duplicate) final reply a chance to fire before asserting
+    // give the terminal result card a chance to arrive before asserting
     await new Promise((resolve) => setTimeout(resolve, 80));
 
-    expect(h.channel.sent).toHaveLength(0);
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastCard(h.channel)).not.toContain('这是答案');
+    expect(lastCard(h.channel)).toContain('未返回内容');
   });
 
   it('waits for a slow-opening progress stream instead of replying alongside it', async () => {
@@ -458,7 +463,8 @@ describe('markdown stream startup failures', () => {
     await waitFor(() => visibleProgress.some((markdown) => markdown.includes('ANSWER_ONCE')));
     await new Promise((resolve) => setTimeout(resolve, 80));
 
-    expect(h.channel.sent).toHaveLength(0);
+    expect(h.channel.sent).toHaveLength(1);
+    expect(lastCard(h.channel)).not.toContain('ANSWER_ONCE');
   });
 
   it('renders nothing in a progress stream it already gave up on', async () => {
@@ -488,7 +494,7 @@ describe('markdown stream startup failures', () => {
     gate.resolve();
     await new Promise((resolve) => setTimeout(resolve, 80));
 
-    expect(lastMarkdown(h.channel)).toContain('ANSWER_ONCE');
+    expect(lastCard(h.channel)).toContain('ANSWER_ONCE');
     expect(h.channel.sent).toHaveLength(1);
     expect(setContent).not.toHaveBeenCalled();
   }, 15_000);
@@ -514,7 +520,7 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_stream_fail', 'run'));
     await waitFor(() => h.channel.sent.length === 1);
 
-    expect(lastMarkdown(h.channel)).toContain('FINAL_AFTER_STREAM_FAILURE');
+    expect(lastCard(h.channel)).toContain('FINAL_AFTER_STREAM_FAILURE');
     expect(
       fail.mock.calls.some(
         (call) =>
@@ -596,6 +602,548 @@ describe('markdown stream startup failures', () => {
   });
 });
 
+describe('CoT 与最终结果卡片联动', () => {
+  it.each([
+    { replyMode: 'markdown' as const, agentKind: 'codex' as const },
+    { replyMode: 'markdown' as const, agentKind: 'claude' as const },
+    { replyMode: 'card' as const, agentKind: 'codex' as const },
+    { replyMode: 'card' as const, agentKind: 'claude' as const },
+  ])('保留 $replyMode 配置入口并发送一张增强结果卡片', async ({ replyMode, agentKind }) => {
+    const cotUrls = mockCotApi(false);
+    const streamCalls: unknown[] = [];
+    const h = await createHarness({
+      agentKind,
+      messageReply: replyMode,
+      showToolCalls: false,
+      cotMessages: 'brief',
+      events: [
+        { type: 'text', delta: '过程只应出现在 CoT 中' },
+        { type: 'tool_use', id: 'hidden-tool', name: 'Bash', input: { command: 'hidden command' } },
+        { type: 'tool_result', id: 'hidden-tool', output: 'hidden output', isError: true },
+        { type: 'final_text', content: '最终答复只应出现在结果卡片中' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        streamCalls.push(input);
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_result_card', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
+    expect(streamCalls).toHaveLength(0);
+    expect(h.channel.sent).toHaveLength(1);
+    const content = h.channel.sent[0]?.content as { card?: unknown; markdown?: string } | undefined;
+    expect(content?.card).toBeDefined();
+    expect(content?.markdown).toBeUndefined();
+    const result = content?.card as {
+      header?: {
+        title?: { content?: string };
+        subtitle?: { content?: string };
+        text_tag_list?: Array<{ text?: { content?: string }; color?: string }>;
+      };
+    };
+    const resultJson = JSON.stringify(result);
+    expect(resultJson).toContain('最终答复只应出现在结果卡片中');
+    expect(resultJson).not.toContain('过程只应出现在 CoT 中');
+    expect(resultJson).not.toMatch(/Bash|hidden command|hidden output/);
+    expect(result?.header?.title?.content).toBe(agentKind === 'claude' ? '🤖 Claude Code' : '🤖 Codex');
+    expect(result?.header?.subtitle?.content).toContain('处理时长');
+    expect(result?.header?.text_tag_list?.[0]).toMatchObject({
+      text: { content: '已完成 · 1 次工具错误' },
+      color: 'orange',
+    });
+    expect(resultJson).toContain('工具调用：1 次 · 成功 0 · 错误 1');
+  });
+
+  const cotModes = ['off', 'brief', 'detailed'] as const;
+  const toolVisibilityModes = [false, true] as const;
+  const replyModes = ['card', 'markdown', 'text'] as const;
+  const displayCombinations = cotModes.flatMap((cotMessages) =>
+    toolVisibilityModes.flatMap((showToolCalls) =>
+      replyModes.map((messageReply) => ({ cotMessages, showToolCalls, messageReply })),
+    ),
+  );
+
+  it.each(displayCombinations)(
+    'covers the message entry matrix: CoT=$cotMessages tools=$showToolCalls reply=$messageReply',
+    async ({ cotMessages, showToolCalls, messageReply }) => {
+      const cotBodies: string[] = [];
+      const cotUrls = mockCotApi(false, false, cotBodies);
+      const streamCalls: unknown[] = [];
+      const progressContent: string[] = [];
+      const h = await createHarness({
+        agentKind: 'codex',
+        messageReply,
+        showToolCalls,
+        cotMessages,
+        events: [
+          { type: 'text', delta: 'MATRIX_PROCESS_TEXT' },
+          { type: 'tool_use', id: 'matrix-error', name: 'Bash', input: { command: 'matrix-error-command' } },
+          { type: 'tool_result', id: 'matrix-error', output: 'MATRIX_ERROR_OUTPUT', isError: true },
+          { type: 'tool_use', id: 'matrix-success', name: 'Read', input: { file_path: 'matrix-file.ts' } },
+          { type: 'tool_result', id: 'matrix-success', output: 'MATRIX_SUCCESS_OUTPUT', isError: false },
+          { type: 'final_text', content: 'MATRIX_FINAL_ANSWER' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        stream: async (_chatId, input) => {
+          streamCalls.push(input);
+          const cardProducer = (input as {
+            card?: { producer?: (ctrl: { update(next: unknown): Promise<void> }) => Promise<void> };
+          }).card?.producer;
+          const markdownProducer = (input as {
+            markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+          }).markdown;
+          await cardProducer?.({
+            update: async (next) => { progressContent.push(JSON.stringify(next)); },
+          });
+          await markdownProducer?.({
+            setContent: async (content) => { progressContent.push(content); },
+          });
+          return { messageId: 'om_matrix_progress' };
+        },
+      });
+      if (messageReply === 'text') h.controls.cfg.preferences.messageReplyMigrated = true;
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message(`om_matrix_${cotMessages}_${showToolCalls}_${messageReply}`, 'run'));
+      await waitFor(() => h.channel.sent.length === 1);
+
+      const sent = h.channel.sent[0];
+      expect(h.channel.sent).toHaveLength(1);
+      expect(sent?.options).toMatchObject({ replyTo: `om_matrix_${cotMessages}_${showToolCalls}_${messageReply}` });
+      const finalContent = sent?.content as { card?: unknown; markdown?: string };
+      const finalJson = JSON.stringify(finalContent);
+      expect(finalJson.split('MATRIX_FINAL_ANSWER').length - 1).toBe(1);
+      expect(finalJson).not.toContain('MATRIX_PROCESS_TEXT');
+
+      if (messageReply === 'text') {
+        expect(finalContent.card).toBeUndefined();
+        expect(finalContent.markdown).toContain('MATRIX_FINAL_ANSWER');
+      } else {
+        expect(finalContent.card).toBeDefined();
+        expect(finalContent.markdown).toBeUndefined();
+        expect(finalJson).toContain('工具调用：2 次 · 成功 1 · 错误 1');
+        expect(finalJson).toContain('已完成 · 1 次工具错误');
+      }
+
+      if (cotMessages === 'off') {
+        expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(false);
+        if (messageReply === 'text') {
+          expect(streamCalls).toHaveLength(0);
+        } else {
+          expect(streamCalls).toHaveLength(1);
+          if (showToolCalls) expect(progressContent.join('\n')).toContain('Bash');
+          else expect(progressContent.join('\n')).not.toMatch(/Bash|matrix-error-command|MATRIX_ERROR_OUTPUT/);
+        }
+      } else {
+        expect(streamCalls).toHaveLength(0);
+        expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
+        const cotContent = cotBodies.join('\n');
+        if (!showToolCalls) {
+          expect(cotContent).not.toMatch(/Bash|Read|matrix-error-command|matrix-file\.ts|MATRIX_ERROR_OUTPUT|MATRIX_SUCCESS_OUTPUT/);
+        } else {
+          expect(cotContent).toContain('Bash');
+          expect(cotContent).toContain('matrix-error-command');
+          if (cotMessages === 'brief') {
+            expect(cotContent).not.toContain('TOOL_CALL_ARGS');
+            expect(cotContent).not.toContain('MATRIX_ERROR_OUTPUT');
+            expect(cotContent).not.toContain('MATRIX_SUCCESS_OUTPUT');
+          } else {
+            expect(cotContent).toContain('TOOL_CALL_ARGS');
+            expect(cotContent).toContain('MATRIX_ERROR_OUTPUT');
+            expect(cotContent).toContain('MATRIX_SUCCESS_OUTPUT');
+          }
+        }
+      }
+    },
+  );
+
+  it('正常结束但没有正文时仍发送状态与摘要卡片', async () => {
+    const cotUrls = mockCotApi(false);
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'brief',
+      events: [{ type: 'done', terminationReason: 'normal' }],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_empty_answer', 'run'));
+    await waitFor(() => cotUrls.some((url) => url.includes('/complete/')));
+
+    expect(h.channel.sent).toHaveLength(1);
+    const resultJson = JSON.stringify(h.channel.sent[0]?.content);
+    expect(resultJson).toContain('已完成');
+    expect(resultJson).toContain('工具调用：0 次 · 成功 0 · 错误 0');
+    expect(resultJson).toContain('未返回内容');
+    const card = h.channel.sent[0]?.content as { card?: { header?: {
+      template?: string;
+      text_tag_list?: Array<{ color?: string }>;
+    } } };
+    expect(card.card?.header?.template).toBe('green');
+    expect(card.card?.header?.text_tag_list?.[0]?.color).toBe('green');
+  });
+
+  it('没有最终正文的中断仍优先显示终态并列出未完成调用', async () => {
+    const cotUrls = mockCotApi(false);
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'brief',
+      events: [
+        { type: 'text', delta: '中断前的过程文本不应复制进结果卡片' },
+        { type: 'tool_use', id: 'failed-tool', name: 'Bash', input: { command: 'hidden failure' } },
+        { type: 'tool_result', id: 'failed-tool', output: 'hidden error', isError: true },
+        { type: 'tool_use', id: 'unfinished-tool', name: 'Read', input: { file_path: 'hidden path' } },
+        { type: 'done', terminationReason: 'interrupted' },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_interrupted_empty', 'run'));
+    await waitFor(() => cotUrls.some((url) => url.includes('/complete/')));
+
+    expect(h.channel.sent).toHaveLength(1);
+    const card = h.channel.sent[0]?.content as {
+      card?: {
+        header?: {
+          template?: string;
+          text_tag_list?: Array<{ text?: { content?: string }; color?: string }>;
+        };
+      };
+    };
+    expect(card.card?.header?.template).toBe('grey');
+    expect(card.card?.header?.text_tag_list?.[0]).toMatchObject({
+      text: { content: '已中断' },
+      color: 'neutral',
+    });
+    const resultJson = JSON.stringify(card.card);
+    expect(resultJson).toContain('工具调用：2 次 · 成功 0 · 错误 1 · 未完成 1');
+    expect(resultJson).not.toMatch(/中断前的过程文本|Bash|Read|hidden failure|hidden error|hidden path/);
+  });
+
+  it('CoT 关闭时保留 markdown 过程流并以结果卡片收尾', async () => {
+    const cotUrls = mockCotApi(false);
+    const streamInputs: unknown[] = [];
+    const streamedContent: string[] = [];
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'off',
+      events: [
+        { type: 'text', delta: '旧模式的过程消息' },
+        { type: 'tool_use', id: 'hidden-off-tool', name: 'Bash', input: { command: 'hidden off command' } },
+        { type: 'tool_result', id: 'hidden-off-tool', output: 'hidden off output', isError: false },
+        { type: 'final_text', content: '旧模式的最终答复' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        streamInputs.push(input);
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: async (markdown) => { streamedContent.push(markdown); } });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_off_keeps_markdown', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(false);
+    expect(streamInputs).toHaveLength(1);
+    expect(streamedContent.some((content) => content.includes('旧模式的过程消息'))).toBe(true);
+    expect(JSON.stringify(streamedContent)).not.toMatch(/Bash|hidden off command|hidden off output/);
+    const result = h.channel.sent[0]?.content as { card?: unknown; markdown?: string };
+    expect(result.card).toBeDefined();
+    expect(result.markdown).toBeUndefined();
+    expect(JSON.stringify(result.card)).toContain('旧模式的最终答复');
+    expect(JSON.stringify(result.card)).not.toContain('旧模式的过程消息');
+  });
+
+  it.each([
+    { cotMessages: 'off' as const, createFails: false },
+    { cotMessages: 'brief' as const, createFails: true },
+  ])('markdown 过程流结束后用结果卡片收尾，并撤回重复答案载体：$cotMessages', async ({ cotMessages, createFails }) => {
+    const cotUrls = mockCotApi(createFails);
+    const streamedContent: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages,
+      events: [
+        { type: 'text', delta: '先检查现状。' },
+        { type: 'text', delta: '这是最终答复。' },
+        { type: 'final_text', content: '这是最终答复。' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: async (markdown) => { streamedContent.push(markdown); } });
+        return {
+          messageId: 'om_progress_with_answer',
+          chunkIds: ['om_progress_chunk_1', 'om_progress_chunk_2'],
+        };
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_markdown_final_card', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(streamedContent.some((content) => content.includes('这是最终答复。'))).toBe(true);
+    expect(h.channel.recalled).toEqual([
+      'om_progress_chunk_1',
+      'om_progress_chunk_2',
+      'om_progress_with_answer',
+    ]);
+    expect(h.channel.sent).toHaveLength(1);
+    const content = h.channel.sent[0]?.content as { card?: unknown; markdown?: string };
+    expect(content.card).toBeDefined();
+    expect(content.markdown).toBeUndefined();
+    expect(JSON.stringify(content.card)).toContain('这是最终答复。');
+    expect(JSON.stringify(content.card)).not.toContain('先检查现状。');
+    expect(cotMessages === 'off' || cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
+  });
+
+  it('结果卡发送失败时不撤回仍可见的 markdown 最终答案', async () => {
+    const streamedContent: string[] = [];
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'off',
+      events: [
+        { type: 'text', delta: '流式最终答复不能被提前撤回' },
+        { type: 'final_text', content: '流式最终答复不能被提前撤回' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+        }).markdown;
+        await producer?.({ setContent: async (markdown) => { streamedContent.push(markdown); } });
+        return { messageId: 'om_stream_kept_after_card_failure' };
+      },
+      send: async (_chatId, content) => {
+        if ((content as { card?: unknown }).card) throw new Error('result card send failed');
+        return { messageId: 'sent_fallback' };
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_card_send_failure', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(streamedContent.join('\n')).toContain('流式最终答复不能被提前撤回');
+    expect(h.channel.recalled).toEqual([]);
+  });
+
+  it('CoT 更新失败时保留降级提示并只发送一次最终答案', async () => {
+    mockCotApi(false, true);
+    const streamCalls: unknown[] = [];
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'brief',
+      events: [
+        { type: 'text', delta: 'CoT 更新失败时的过程文本' },
+        { type: 'final_text', content: '更新失败仍要保留最终答案' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => { streamCalls.push(input); },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_cot_update_fallback', 'run'));
+    await waitFor(() => h.channel.sent.length === 2);
+
+    expect(streamCalls).toHaveLength(0);
+    const markdowns = h.channel.sent.flatMap((entry) => {
+      const content = entry.content as { markdown?: string };
+      return content.markdown ? [content.markdown] : [];
+    });
+    expect(markdowns).toEqual(['COT 过程消息更新失败，已停止展示过程；最终答案仍会继续发送。']);
+    const cards = h.channel.sent.flatMap((entry) => {
+      const content = entry.content as { card?: unknown };
+      return content.card ? [JSON.stringify(content.card)] : [];
+    });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toContain('更新失败仍要保留最终答案');
+    expect(cards[0]).not.toContain('CoT 更新失败时的过程文本');
+  });
+
+  it('CoT 关闭且工具隐藏时保留交互卡片流程并显示完整统计', async () => {
+    const progressCards: unknown[] = [];
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'card',
+      showToolCalls: false,
+      cotMessages: 'off',
+      events: [
+        { type: 'text', delta: '交互卡片的过程内容' },
+        { type: 'tool_use', id: 'hidden-card-tool', name: 'Bash', input: { command: 'hidden card command' } },
+        { type: 'tool_result', id: 'hidden-card-tool', output: 'hidden card output', isError: false },
+        { type: 'final_text', content: '交互卡片最终答复' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          card?: { producer?: (ctrl: { update(next: unknown): Promise<void> }) => Promise<void> };
+        }).card?.producer;
+        await producer?.({ update: async (next) => { progressCards.push(next); } });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_card_hidden_tools', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(JSON.stringify(progressCards)).toContain('交互卡片的过程内容');
+    expect(JSON.stringify(progressCards)).not.toMatch(/Bash|hidden card command|hidden card output/);
+    expect(h.channel.sent).toHaveLength(1);
+    const resultJson = JSON.stringify(h.channel.sent[0]?.content);
+    expect(resultJson).toContain('交互卡片最终答复');
+    expect(resultJson).toContain('工具调用：1 次 · 成功 1 · 错误 0');
+    expect(resultJson).not.toMatch(/Bash|hidden card command|hidden card output/);
+  });
+
+  it('纯文本模式下隐藏工具细节并保留文字最终答复', async () => {
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'text',
+      showToolCalls: false,
+      cotMessages: 'off',
+      events: [
+        { type: 'tool_use', id: 'hidden-text-tool', name: 'Bash', input: { command: 'hidden text command' } },
+        { type: 'tool_result', id: 'hidden-text-tool', output: 'hidden text output', isError: false },
+        { type: 'final_text', content: '纯文本最终答复' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    h.controls.cfg.preferences.messageReplyMigrated = true;
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_text_hidden_tools', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(h.channel.sent).toHaveLength(1);
+    const content = h.channel.sent[0]?.content as { markdown?: string; card?: unknown };
+    expect(content.markdown).toBe('纯文本最终答复');
+    expect(content.card).toBeUndefined();
+    expect(JSON.stringify(content)).not.toMatch(/Bash|hidden text command|hidden text output/);
+  });
+
+  it.each([
+    {
+      name: 'agent error',
+      finalText: 'agent error final answer',
+      terminalEvent: { type: 'error', message: 'agent failed', terminationReason: 'failed' } as AgentEvent,
+      label: '运行失败',
+      template: 'red',
+      color: 'red',
+    },
+    {
+      name: 'interrupt',
+      finalText: 'interrupted final answer',
+      terminalEvent: { type: 'done', terminationReason: 'interrupted' } as AgentEvent,
+      label: '已中断',
+      template: 'grey',
+      color: 'neutral',
+    },
+    {
+      name: 'timeout',
+      finalText: 'timeout final answer',
+      terminalEvent: {
+        type: 'error', message: 'agent timed out', terminationReason: 'timeout', timeoutMinutes: 15,
+      } as AgentEvent,
+      label: '已超时',
+      template: 'orange',
+      color: 'orange',
+    },
+    {
+      name: 'clean finish without answer',
+      finalText: undefined,
+      terminalEvent: { type: 'done', terminationReason: 'normal' } as AgentEvent,
+      label: '已完成',
+      template: 'green',
+      color: 'green',
+    },
+  ])('CoT 关闭的 Codex/card 终态保留真实状态：$name', async ({
+    finalText,
+    terminalEvent,
+    label,
+    template,
+    color,
+  }) => {
+    const progressCards: unknown[] = [];
+    const events: AgentEvent[] = [
+      { type: 'text', delta: '只在进展卡展示的过程' },
+      { type: 'tool_use', id: 'tool-unfinished', name: 'Bash', input: { command: 'hidden command' } },
+      ...(finalText ? [{ type: 'final_text' as const, content: finalText }] : []),
+      terminalEvent,
+    ];
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'card',
+      showToolCalls: false,
+      cotMessages: 'off',
+      events,
+      stream: async (_chatId, input) => {
+        const producer = (input as {
+          card?: { producer?: (ctrl: { update(next: unknown): Promise<void> }) => Promise<void> };
+        }).card?.producer;
+        await producer?.({ update: async (next) => { progressCards.push(next); } });
+      },
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message(`om_card_terminal_${label}`, 'run'));
+    await waitFor(() => JSON.stringify(progressCards).includes(label));
+    if (finalText) await waitFor(() => h.channel.sent.length === 1);
+    else expect(h.channel.sent).toHaveLength(0);
+
+    const result = JSON.parse(finalText
+      ? JSON.stringify(h.channel.sent[0]?.content)
+      : JSON.stringify(progressCards.at(-1))) as {
+        card?: { header?: unknown };
+        header?: {
+          template?: string;
+          text_tag_list?: Array<{ color?: string; text?: { content?: string } }>;
+        };
+        body?: { elements?: unknown[] };
+    };
+    const resultJson = JSON.stringify(result.card ?? result);
+    const header = ((result.card as { header?: typeof result.header } | undefined)?.header ?? result.header);
+    expect(header?.template).toBe(template);
+    expect(header?.text_tag_list?.[0]).toMatchObject({
+      text: { content: label },
+      color,
+    });
+    expect(resultJson).toContain(finalText
+      ? '工具调用：1 次 · 成功 0 · 错误 0 · 未完成 1'
+      : '工具调用：1 次 · 成功 0 · 错误 0');
+    expect(resultJson).not.toMatch(/Bash|hidden command/);
+    if (finalText) {
+      expect(resultJson).toContain(finalText);
+      expect(resultJson).not.toContain('只在进展卡展示的过程');
+    } else {
+      expect(resultJson).toContain('只在进展卡展示的过程');
+    }
+  });
+});
+
 async function createHarness(options: {
   reactionCreate?: () => Promise<{ data: { reaction_id: string } }>;
   stream?: StreamFn;
@@ -604,6 +1152,7 @@ async function createHarness(options: {
   events?: FakeAgentEvents;
   messageReply?: 'card' | 'markdown' | 'text';
   cotMessages?: 'off' | 'brief' | 'detailed';
+  showToolCalls?: boolean;
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
 } = {}): Promise<{
@@ -632,14 +1181,11 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply || options.cotMessages
-      ? {
-          preferences: {
-            ...(options.messageReply ? { messageReply: options.messageReply } : {}),
-            ...(options.cotMessages ? { cotMessages: options.cotMessages } : {}),
-          },
-        }
-      : {}),
+    preferences: {
+      ...(options.messageReply ? { messageReply: options.messageReply } : {}),
+      showToolCalls: options.showToolCalls ?? true,
+      cotMessages: options.cotMessages ?? 'off',
+    },
   });
   const profileConfig = {
     ...baseProfileConfig,
@@ -734,7 +1280,7 @@ async function createFakeBinary(lines: string[]): Promise<{
   };
 }
 
-function mockCotApi(createFails: boolean): string[] {
+function mockCotApi(createFails: boolean, updateFails = false, updateBodies?: string[]): string[] {
   const urls: string[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
@@ -752,7 +1298,10 @@ function mockCotApi(createFails: boolean): string[] {
         : new Response(JSON.stringify({ code: 0, data: { cot_id: 'cot_test', message_id: 'om_cot_test' } }));
     }
     if (method === 'PUT' && url.includes('/open-apis/im/v1/message_cot')) {
-      return new Response(JSON.stringify({ code: 0 }));
+      updateBodies?.push(String(init?.body ?? ''));
+      return updateFails
+        ? new Response(JSON.stringify({ code: 10002, msg: 'COT update rejected' }))
+        : new Response(JSON.stringify({ code: 0 }));
     }
     throw new Error(`unexpected COT request: ${method} ${url}`);
   });
@@ -766,9 +1315,11 @@ function createFakeLarkChannel(harnessOptions: {
 } = {}): FakeLarkChannel {
   const handlers: MessageHandlerMap = {};
   const sent: FakeLarkChannel['sent'] = [];
+  const recalled: FakeLarkChannel['recalled'] = [];
   const channel: FakeLarkChannel = {
     handlers,
     sent,
+    recalled,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -812,6 +1363,9 @@ function createFakeLarkChannel(harnessOptions: {
     stream: harnessOptions.stream ?? (async () => {
       await new Promise<void>(() => {});
     }),
+    async recallMessage(messageId) {
+      recalled.push(messageId);
+    },
     async addReaction(messageId, emojiType) {
       const r = await channel.rawClient.im.v1.messageReaction.create({
         path: { message_id: messageId },
@@ -871,10 +1425,10 @@ function message(messageId: string, content: string): NormalizedMessage {
   } as unknown as NormalizedMessage;
 }
 
-function lastMarkdown(channel: FakeLarkChannel): string {
-  const content = channel.sent.at(-1)?.content as { markdown?: string } | undefined;
-  expect(content?.markdown).toBeTypeOf('string');
-  return content?.markdown ?? '';
+function lastCard(channel: FakeLarkChannel): string {
+  const content = channel.sent.at(-1)?.content as { card?: unknown } | undefined;
+  expect(content?.card).toBeDefined();
+  return JSON.stringify(content?.card);
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {

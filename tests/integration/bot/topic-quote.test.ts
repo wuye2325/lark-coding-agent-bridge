@@ -291,10 +291,7 @@ describe('topic message quote handling', () => {
     expect(prompt).not.toContain('<topic_context>');
   });
 
-  it('does not open a progress stream when the agent produces no content', async () => {
-    // The SDK starts a stream eagerly and finishes an empty one with its
-    // "(no content)" placeholder, so a content-less run used to post a card and
-    // recall it seconds later. Nothing durable to show → no message at all.
+  it('does not open a progress stream when the agent produces no content and sends one result card', async () => {
     const h = await createHarness({
       chatMode: 'group',
       agentEvents: [{ type: 'done', terminationReason: 'normal' }],
@@ -306,11 +303,17 @@ describe('topic message quote handling', () => {
       message({ messageId: 'om_empty', rootId: 'om_empty', parentId: 'om_empty', content: '@Bridge ping' }),
     );
     await waitFor(() => h.agent.runOptions.length === 1);
-    // give the (absent) stream and its recall a chance to fire before asserting
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await waitFor(() => h.channel.sent.length === 1);
 
     expect(h.channel.streams).toHaveLength(0);
-    expect(h.channel.sent).toHaveLength(0);
+    expect(h.channel.sent).toHaveLength(1);
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_empty' });
+    const resultCard = (h.channel.sent[0]?.content as { card?: {
+      header?: { text_tag_list?: Array<{ text?: { content?: string } }> };
+    } }).card;
+    expect(resultCard?.header?.text_tag_list?.[0]?.text?.content).toBe('已完成');
+    expect(JSON.stringify(resultCard)).toContain('工具调用：0 次 · 成功 0 · 错误 0');
+    expect(JSON.stringify(resultCard)).toContain('未返回内容');
     expect(h.channel.recallMessage).not.toHaveBeenCalled();
   });
 
@@ -443,7 +446,7 @@ describe('merge_forward fetch failure', () => {
     expect((hint?.content as { text?: string }).text).toContain('重新转发');
   });
 
-  it('still runs when a merge_forward was genuinely empty (not a fetch failure)', async () => {
+  it('still runs a genuinely empty merge_forward and returns its status card', async () => {
     const h = await createHarness({ chatMode: 'group' });
 
     await startTestBridge(h);
@@ -458,9 +461,15 @@ describe('merge_forward fetch failure', () => {
       }),
     );
     await waitFor(() => h.agent.runOptions.length === 1);
+    await waitFor(() => h.channel.sent.length === 1);
 
     expect(h.agent.runOptions).toHaveLength(1);
-    expect(h.channel.sent).toHaveLength(0);
+    expect(h.agent.runOptions[0]?.prompt).toContain('forwarded_messages');
+    expect(h.channel.sent).toHaveLength(1);
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_forward_empty' });
+    const resultCard = (h.channel.sent[0]?.content as { card?: unknown }).card;
+    expect(JSON.stringify(resultCard)).toContain('已完成');
+    expect(JSON.stringify(resultCard)).toContain('未返回内容');
   });
 });
 

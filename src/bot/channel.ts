@@ -4,7 +4,7 @@ import type {
   NormalizedMessage,
 } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
 import {
@@ -19,13 +19,14 @@ import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { CallbackRegistryStore } from '../card/callback-registry';
-import { renderCard } from '../card/run-renderer';
+import { renderCard, type RunCardRenderOptions, type RunToolStats } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
   markIdleTimeout,
   markInterrupted,
   reduce,
+  type Block,
   type RunState,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
@@ -1128,7 +1129,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
-  const cardRenderOptions = callbackAuth
+  const cardRenderOptions: RunCardRenderOptions = callbackAuth
     ? {
         signCallback: (action: string) =>
           callbackAuth.sign({
@@ -1142,6 +1143,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }),
       }
     : {};
+  const runTiming: { durationMs?: number } = {};
+  const renderOptionsForState = (state: RunState): RunCardRenderOptions => ({
+    ...cardRenderOptions,
+    agentName: controls.profileConfig.agentKind === 'claude' ? '🤖 Claude Code' : '🤖 Codex',
+    workspaceName: basename(cwd),
+    ...(runTiming.durationMs !== undefined ? { durationMs: runTiming.durationMs } : {}),
+    toolStats: runToolStats(state),
+  });
 
   // For non-card modes Claude's output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
@@ -1166,11 +1175,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         runId: execution.runId,
         scope,
         inputPreview: lastMsg.content,
+        showTools: () => getShowToolCalls(controls.cfg),
       });
       await cotPublisher.start();
       if (!cotPublisher.disabled) {
         const cotDone = consumeCotEvents(execution.subscribe(), cotPublisher, {
           detail: cotMessages,
+          showTools: () => getShowToolCalls(controls.cfg),
         });
         const finalState = await processAgentStream(
           handle,
@@ -1179,6 +1190,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           idleTimeoutMs,
           recordSession,
           async () => {},
+          runTiming,
         );
         await cotDone;
         if (cotPublisher.degradedReason) {
@@ -1194,10 +1206,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           channel,
           chatId,
           scope,
-          state: finalAnswerOnlyState(finalState),
+          state: cotResultState(finalState),
           replyMode,
+          forceCard: replyMode !== 'text',
           sendOpts,
-          cardRenderOptions,
+          cardRenderOptions: renderOptionsForState(finalState),
         });
         return;
       }
@@ -1207,6 +1220,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (replyMode === 'card') {
       let latestState: RunState = initialState;
       let producerStarted = false;
+      let progressStreamFailed = false;
       let cardCtrl:
         | { update(next: object | ((current: object) => object)): Promise<void> }
         | undefined;
@@ -1215,18 +1229,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           chatId,
           {
             card: {
-              initial: renderCard(initialState, cardRenderOptions),
+              initial: renderCard(initialState, renderOptionsForState(initialState)),
               producer: async (ctrl) => {
                 producerStarted = true;
                 if (progress.abandoned()) return;
                 cardCtrl = ctrl;
-                await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+                await ctrl.update(renderCard(filterForPrefs(latestState), renderOptionsForState(latestState)));
                 await renderDone;
               },
             },
           },
           sendOpts,
-        ),
+        ).catch((err) => {
+          progressStreamFailed = true;
+          throw err;
+        }),
       );
       const renderDone = processAgentStream(
         handle,
@@ -1238,9 +1255,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            await cardCtrl.update(renderCard(filterForPrefs(state), renderOptionsForState(state)));
           }
         },
+        runTiming,
       );
       try {
         await awaitRenderAwareStream({
@@ -1253,30 +1271,35 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             if (renderText(filterForPrefs(state)).trim() === '') return;
             await channel.send(
               chatId,
-              { card: renderCard(filterForPrefs(state), cardRenderOptions) },
+              { card: renderCard(filterForPrefs(state), renderOptionsForState(state)) },
               sendOpts,
             );
           },
         });
       } catch (err) {
         if (controls.profileConfig.agentKind !== 'codex') throw err;
+        progressStreamFailed = true;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      if (
+        controls.profileConfig.agentKind === 'codex' &&
+        (progressStreamFailed || !progress.opened() || progress.abandoned() || latestState.finalText?.trim())
+      ) {
         await sendFinalReply({
           channel,
           chatId,
           scope,
-          state: finalReplyState(progress, filterForPrefs(latestState)),
+          state: finalResultCardState(progress, latestState, progressStreamFailed),
           replyMode,
           sendOpts,
-          cardRenderOptions,
+          cardRenderOptions: renderOptionsForState(latestState),
         });
       }
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
       let producerStarted = false;
+      let progressStreamFailed = false;
       let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
       const progress = createLazyProgressStream(scope, replyMode, () =>
         channel.stream(
@@ -1291,7 +1314,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             },
           },
           sendOpts,
-        ),
+        ).catch((err) => {
+          progressStreamFailed = true;
+          throw err;
+        }),
       );
       const renderDone = processAgentStream(
         handle,
@@ -1306,6 +1332,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             await markdownCtrl.setContent(renderText(filterForPrefs(state)));
           }
         },
+        runTiming,
       );
       try {
         await awaitRenderAwareStream({
@@ -1313,30 +1340,24 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           progress,
           renderDone,
           producerStarted: () => producerStarted,
-          fallback: async (state) => {
-            if (controls.profileConfig.agentKind === 'codex') return;
-            const body = renderText(filterForPrefs(state));
-            if (body.trim()) {
-              await channel.send(chatId, { markdown: body }, sendOpts);
-            }
-          },
+          fallback: async () => {},
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
+        progressStreamFailed = true;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
-        await sendFinalReply({
-          channel,
-          chatId,
-          scope,
-          state: finalReplyState(progress, filterForPrefs(latestState)),
-          replyMode,
-          sendOpts,
-          cardRenderOptions,
-        });
-      }
+      await sendFinalReply({
+        channel,
+        chatId,
+        scope,
+        state: finalResultCardState(progress, latestState, progressStreamFailed),
+        replyMode,
+        forceCard: true,
+        sendOpts,
+        cardRenderOptions: renderOptionsForState(latestState),
+      });
+      recallProgressContainingFinalAnswer(channel, progress, latestState, scope);
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1348,6 +1369,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async () => {},
+        runTiming,
       );
       await sendFinalReply({
         channel,
@@ -1359,7 +1381,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             : filterForPrefs(finalState),
         replyMode,
         sendOpts,
-        cardRenderOptions,
+        cardRenderOptions: renderOptionsForState(finalState),
       });
     }
   } catch (err) {
@@ -1446,30 +1468,38 @@ function shouldOpenProgressStream(state: RunState): boolean {
   return renderText({ ...state, footer: null }).trim() !== '';
 }
 
-/**
- * What Codex's dedicated final reply may carry, given what the progress stream
- * already put on screen.
- *
- * `finalAnswerOnlyState` falls back to the run's text blocks when Codex held
- * nothing back for the end — correct where nothing was streamed (CoT, text
- * mode, a stream we gave up on), but those blocks are already visible once a
- * stream rendered them, and repeating them posts the same words a second time.
- * Codex leaves the answer in `blocks` more often than it looks: any abnormal
- * turn end (`turn.failed`, or the process exiting before `turn.completed`)
- * flushes the pending message as text instead of `final_text`.
- *
- * Terminal notices are dropped for the same reason — the stream rendered them.
- */
-function finalReplyState(progress: LazyProgressStream, state: RunState): RunState {
-  if (!progress.opened() || progress.abandoned()) return finalAnswerOnlyState(state);
+function finalResultCardState(
+  progress: LazyProgressStream,
+  state: RunState,
+  progressStreamFailed = false,
+): RunState {
+  const answerState = finalAnswerOnlyState(state);
+  if (progressStreamFailed || !progress.opened() || progress.abandoned()) return answerState;
   return {
-    ...state,
-    blocks: state.finalText ? [{ kind: 'text', content: state.finalText, streaming: false }] : [],
-    reasoning: { content: '', active: false },
-    footer: null,
-    terminal: 'done',
-    errorMsg: undefined,
+    ...answerState,
+    blocks: state.finalText?.trim()
+      ? [{ kind: 'text', content: state.finalText, streaming: false }]
+      : [],
   };
+}
+
+function recallProgressContainingFinalAnswer(
+  channel: LarkChannel,
+  progress: LazyProgressStream,
+  state: RunState,
+  scope: string,
+): void {
+  const finalText = state.finalText?.trim();
+  if (!progress.opened() || progress.abandoned() || !finalText) return;
+  const streamedText = state.blocks
+    .filter((block): block is Extract<Block, { kind: 'text' }> => block.kind === 'text')
+    .map((block) => block.content)
+    .join('');
+  if (!streamedText.includes(finalText)) return;
+  void progress.settled.then(
+    (result) => recallStreamedMessage(channel, result, scope),
+    () => {},
+  );
 }
 
 /**
@@ -1507,17 +1537,23 @@ async function recallStreamedMessage(
   streamResult: unknown,
   scope: string,
 ): Promise<void> {
-  const messageId = (streamResult as { messageId?: string } | undefined)?.messageId;
-  if (!messageId) return;
-  try {
-    await channel.recallMessage(messageId);
-    log.info('outbound', 'recall-empty', { scope, messageId });
-  } catch (err) {
-    log.warn('outbound', 'recall-empty-failed', {
-      scope,
-      messageId,
-      err: err instanceof Error ? err.message : String(err),
-    });
+  const receipt = streamResult as { messageId?: unknown; chunkIds?: unknown } | undefined;
+  const chunkIds = Array.isArray(receipt?.chunkIds)
+    ? receipt.chunkIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
+  const messageId = typeof receipt?.messageId === 'string' ? receipt.messageId : undefined;
+  const messageIds = [...new Set([...chunkIds, ...(messageId ? [messageId] : [])])];
+  for (const id of messageIds) {
+    try {
+      await channel.recallMessage(id);
+      log.info('outbound', 'recall-empty', { scope, messageId: id });
+    } catch (err) {
+      log.warn('outbound', 'recall-empty-failed', {
+        scope,
+        messageId: id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -1527,20 +1563,19 @@ async function sendFinalReply(input: {
   scope: string;
   state: RunState;
   replyMode: ReturnType<typeof getMessageReplyMode>;
+  forceCard?: boolean;
   sendOpts: { replyTo: string; replyInThread?: boolean };
-  cardRenderOptions: { signCallback?: (action: string) => string };
+  cardRenderOptions: RunCardRenderOptions;
 }): Promise<void> {
   const body = renderText(input.state);
 
-  // Nothing deliverable to send (agent produced no text on a clean finish;
-  // error/interrupt/timeout keep `body` non-empty via their notices). Skip
-  // rather than post an empty card that renders as "(no content)".
-  if (!body.trim()) {
+  // 纯文字没有正文时跳过；结果卡仍需保留状态与统计。
+  if (!body.trim() && input.replyMode !== 'card' && !input.forceCard) {
     log.info('outbound', 'skip-empty', { scope: input.scope, mode: input.replyMode });
     return;
   }
 
-  if (input.replyMode === 'card') {
+  if (input.replyMode === 'card' || input.forceCard) {
     const result = await input.channel.send(
       input.chatId,
       { card: renderCard(input.state, input.cardRenderOptions) },
@@ -1567,6 +1602,24 @@ async function sendFinalReply(input: {
     requireMessageReceipt(result, 'text');
     log.info('outbound', 'sent', outboundLogFields(input, 'text', body, result));
   }
+}
+
+function runToolStats(state: RunState): RunToolStats {
+  const tools = state.blocks.flatMap((block) => block.kind === 'tool' ? [block.tool] : []);
+  const stats: RunToolStats = {
+    total: tools.length,
+    succeeded: tools.filter((tool) => tool.status === 'done').length,
+    errors: tools.filter((tool) => tool.status === 'error').length,
+  };
+  if (state.terminal === 'error' || state.terminal === 'interrupted' || state.terminal === 'idle_timeout') {
+    stats.unfinished = tools.filter((tool) => tool.status === 'running').length;
+  }
+  return stats;
+}
+
+function cotResultState(state: RunState): RunState {
+  const answerState = finalAnswerOnlyState(state);
+  return state.finalText?.trim() ? answerState : { ...answerState, blocks: [] };
 }
 
 function requireMessageReceipt(result: { messageId?: string }, type: string): void {
@@ -1634,9 +1687,14 @@ async function processAgentStream(
   idleTimeoutMs: number | undefined,
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
+  timing?: { durationMs?: number },
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
+  const flushWithTiming = async (): Promise<void> => {
+    if (timing) timing.durationMs = Date.now() - runStart;
+    await flush(state);
+  };
 
   // Idle watchdog: claude going silent for `idleTimeoutMs` is treated as
   // "presumed hung", we stop() and surface a timeout marker on the card.
@@ -1715,7 +1773,7 @@ async function processAgentStream(
       if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
         log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
       }
-      await flush(state);
+      await flushWithTiming();
       // Stop iterating as soon as we have a terminal state. Some claude
       // versions don't close stdout immediately after the result event, which
       // would leave the for-await waiting forever otherwise.
@@ -1740,7 +1798,7 @@ async function processAgentStream(
   }
   log.info('card', 'final', { scope, terminal: state.terminal, interrupted: handle.interrupted });
   reportMetric('run_e2e_ms', Date.now() - runStart, { terminal: state.terminal });
-  await flush(state);
+  await flushWithTiming();
   if (handle.interrupted) {
     await handle.run.stop();
   }

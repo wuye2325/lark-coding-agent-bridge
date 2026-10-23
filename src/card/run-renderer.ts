@@ -17,10 +17,29 @@ type Group = ToolGroup | TextGroup;
 
 export interface RunCardRenderOptions {
   signCallback?: (action: string) => string;
+  agentName?: string;
+  workspaceName?: string;
+  durationMs?: number;
+  toolStats?: RunToolStats;
+}
+
+export interface RunToolStats {
+  total: number;
+  succeeded: number;
+  errors: number;
+  unfinished?: number;
 }
 
 export function renderCard(state: RunState, options: RunCardRenderOptions = {}): object {
   const elements: object[] = [];
+  const showRunMetadata =
+    options.agentName !== undefined ||
+    options.workspaceName !== undefined ||
+    options.durationMs !== undefined ||
+    options.toolStats !== undefined;
+
+  if (options.toolStats) elements.push(noteMd(toolStatsText(options.toolStats)));
+  const resultContentStart = elements.length;
 
   if (state.reasoning.content) {
     elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
@@ -43,7 +62,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
   } else if (state.terminal === 'error' && state.errorMsg) {
     elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
-  } else if (state.terminal === 'done' && elements.length === 0) {
+  } else if (state.terminal === 'done' && elements.length === resultContentStart) {
     elements.push(noteMd('_（未返回内容）_'));
   }
 
@@ -56,12 +75,88 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   // reject the (streamed) card with a 400 EMAIL_ADDRESS — see mask-email.ts.
   return deepMaskEmails({
     schema: '2.0',
+    ...(showRunMetadata ? { header: runHeader(state, options) } : {}),
     config: {
       streaming_mode: state.terminal === 'running',
       summary: { content: summaryText(state) },
     },
     body: { elements },
   });
+}
+
+function runHeader(state: RunState, options: RunCardRenderOptions): object {
+  const stats = options.toolStats;
+  const status = runStatus(state, stats);
+  const subtitle =
+    state.terminal === 'running'
+      ? [options.workspaceName ? `📁 ${options.workspaceName}` : '', runningStage(state)]
+          .filter(Boolean)
+          .join(' · ')
+      : [
+          options.workspaceName ? `📁 ${options.workspaceName}` : '',
+          options.durationMs !== undefined
+            ? `⏱ 处理时长 ${formatDuration(options.durationMs)}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+
+  return {
+    template: status.template,
+    title: { tag: 'plain_text', content: options.agentName ?? '🤖 Agent' },
+    ...(subtitle ? { subtitle: { tag: 'plain_text', content: subtitle } } : {}),
+    text_tag_list: [
+      {
+        tag: 'text_tag',
+        text: { tag: 'plain_text', content: status.label },
+        color: status.color,
+      },
+    ],
+  };
+}
+
+function runStatus(
+  state: RunState,
+  stats?: RunToolStats,
+): { label: string; color: string; template: string } {
+  if (state.terminal === 'interrupted') {
+    return { label: '已中断', color: 'neutral', template: 'grey' };
+  }
+  if (state.terminal === 'idle_timeout') {
+    return { label: '已超时', color: 'orange', template: 'orange' };
+  }
+  if (state.terminal === 'error') {
+    return { label: '运行失败', color: 'red', template: 'red' };
+  }
+  if (state.terminal === 'done' && stats && stats.errors > 0) {
+    return {
+      label: `已完成 · ${stats.errors} 次工具错误`,
+      color: 'orange',
+      template: 'orange',
+    };
+  }
+  if (state.terminal === 'done') return { label: '已完成', color: 'green', template: 'green' };
+  return { label: '运行中', color: 'wathet', template: 'wathet' };
+}
+
+function runningStage(state: RunState): string {
+  if (state.footer === 'tool_running') return '正在调用工具';
+  if (state.footer === 'streaming') return '正在输出';
+  return '正在思考';
+}
+
+function toolStatsText(stats: RunToolStats): string {
+  const counts = `🧰 工具调用：${stats.total} 次 · 成功 ${stats.succeeded} · 错误 ${stats.errors}`;
+  return stats.unfinished === undefined ? counts : `${counts} · 未完成 ${stats.unfinished}`;
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.floor(Math.max(0, durationMs) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0
+    ? `${minutes} 分 ${String(seconds).padStart(2, '0')} 秒`
+    : `${seconds} 秒`;
 }
 
 function* groupBlocks(blocks: Block[]): Generator<Group> {
