@@ -658,6 +658,109 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).toContain('工具调用：1 次 · 成功 0 · 错误 1');
   });
 
+  const cotModes = ['off', 'brief', 'detailed'] as const;
+  const toolVisibilityModes = [false, true] as const;
+  const replyModes = ['card', 'markdown', 'text'] as const;
+  const displayCombinations = cotModes.flatMap((cotMessages) =>
+    toolVisibilityModes.flatMap((showToolCalls) =>
+      replyModes.map((messageReply) => ({ cotMessages, showToolCalls, messageReply })),
+    ),
+  );
+
+  it.each(displayCombinations)(
+    'covers the message entry matrix: CoT=$cotMessages tools=$showToolCalls reply=$messageReply',
+    async ({ cotMessages, showToolCalls, messageReply }) => {
+      const cotBodies: string[] = [];
+      const cotUrls = mockCotApi(false, false, cotBodies);
+      const streamCalls: unknown[] = [];
+      const progressContent: string[] = [];
+      const h = await createHarness({
+        agentKind: 'codex',
+        messageReply,
+        showToolCalls,
+        cotMessages,
+        events: [
+          { type: 'text', delta: 'MATRIX_PROCESS_TEXT' },
+          { type: 'tool_use', id: 'matrix-error', name: 'Bash', input: { command: 'matrix-error-command' } },
+          { type: 'tool_result', id: 'matrix-error', output: 'MATRIX_ERROR_OUTPUT', isError: true },
+          { type: 'tool_use', id: 'matrix-success', name: 'Read', input: { file_path: 'matrix-file.ts' } },
+          { type: 'tool_result', id: 'matrix-success', output: 'MATRIX_SUCCESS_OUTPUT', isError: false },
+          { type: 'final_text', content: 'MATRIX_FINAL_ANSWER' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        stream: async (_chatId, input) => {
+          streamCalls.push(input);
+          const cardProducer = (input as {
+            card?: { producer?: (ctrl: { update(next: unknown): Promise<void> }) => Promise<void> };
+          }).card?.producer;
+          const markdownProducer = (input as {
+            markdown?: (ctrl: { setContent(markdown: string): Promise<void> }) => Promise<void>;
+          }).markdown;
+          await cardProducer?.({
+            update: async (next) => { progressContent.push(JSON.stringify(next)); },
+          });
+          await markdownProducer?.({
+            setContent: async (content) => { progressContent.push(content); },
+          });
+          return { messageId: 'om_matrix_progress' };
+        },
+      });
+      if (messageReply === 'text') h.controls.cfg.preferences.messageReplyMigrated = true;
+      await startTestBridge(h);
+
+      await h.channel.handlers.message?.(message(`om_matrix_${cotMessages}_${showToolCalls}_${messageReply}`, 'run'));
+      await waitFor(() => h.channel.sent.length === 1);
+
+      const sent = h.channel.sent[0];
+      expect(h.channel.sent).toHaveLength(1);
+      expect(sent?.options).toMatchObject({ replyTo: `om_matrix_${cotMessages}_${showToolCalls}_${messageReply}` });
+      const finalContent = sent?.content as { card?: unknown; markdown?: string };
+      const finalJson = JSON.stringify(finalContent);
+      expect(finalJson.split('MATRIX_FINAL_ANSWER').length - 1).toBe(1);
+      expect(finalJson).not.toContain('MATRIX_PROCESS_TEXT');
+
+      if (messageReply === 'text') {
+        expect(finalContent.card).toBeUndefined();
+        expect(finalContent.markdown).toContain('MATRIX_FINAL_ANSWER');
+      } else {
+        expect(finalContent.card).toBeDefined();
+        expect(finalContent.markdown).toBeUndefined();
+        expect(finalJson).toContain('工具调用：2 次 · 成功 1 · 错误 1');
+        expect(finalJson).toContain('已完成 · 1 次工具错误');
+      }
+
+      if (cotMessages === 'off') {
+        expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(false);
+        if (messageReply === 'text') {
+          expect(streamCalls).toHaveLength(0);
+        } else {
+          expect(streamCalls).toHaveLength(1);
+          if (showToolCalls) expect(progressContent.join('\n')).toContain('Bash');
+          else expect(progressContent.join('\n')).not.toMatch(/Bash|matrix-error-command|MATRIX_ERROR_OUTPUT/);
+        }
+      } else {
+        expect(streamCalls).toHaveLength(0);
+        expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
+        const cotContent = cotBodies.join('\n');
+        if (!showToolCalls) {
+          expect(cotContent).not.toMatch(/Bash|Read|matrix-error-command|matrix-file\.ts|MATRIX_ERROR_OUTPUT|MATRIX_SUCCESS_OUTPUT/);
+        } else {
+          expect(cotContent).toContain('Bash');
+          expect(cotContent).toContain('matrix-error-command');
+          if (cotMessages === 'brief') {
+            expect(cotContent).not.toContain('TOOL_CALL_ARGS');
+            expect(cotContent).not.toContain('MATRIX_ERROR_OUTPUT');
+            expect(cotContent).not.toContain('MATRIX_SUCCESS_OUTPUT');
+          } else {
+            expect(cotContent).toContain('TOOL_CALL_ARGS');
+            expect(cotContent).toContain('MATRIX_ERROR_OUTPUT');
+            expect(cotContent).toContain('MATRIX_SUCCESS_OUTPUT');
+          }
+        }
+      }
+    },
+  );
+
   it('正常结束但没有正文时仍发送状态与摘要卡片', async () => {
     const cotUrls = mockCotApi(false);
     const h = await createHarness({
@@ -1177,7 +1280,7 @@ async function createFakeBinary(lines: string[]): Promise<{
   };
 }
 
-function mockCotApi(createFails: boolean, updateFails = false): string[] {
+function mockCotApi(createFails: boolean, updateFails = false, updateBodies?: string[]): string[] {
   const urls: string[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
@@ -1195,6 +1298,7 @@ function mockCotApi(createFails: boolean, updateFails = false): string[] {
         : new Response(JSON.stringify({ code: 0, data: { cot_id: 'cot_test', message_id: 'om_cot_test' } }));
     }
     if (method === 'PUT' && url.includes('/open-apis/im/v1/message_cot')) {
+      updateBodies?.push(String(init?.body ?? ''));
       return updateFails
         ? new Response(JSON.stringify({ code: 10002, msg: 'COT update rejected' }))
         : new Response(JSON.stringify({ code: 0 }));
