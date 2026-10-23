@@ -1,10 +1,13 @@
-import { deepMaskEmails } from './mask-email';
+import { deepMaskEmails, maskEmails } from './mask-email';
 import { terminalActionElements } from './terminal-actions';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
 const COLLAPSE_TOOL_THRESHOLD = 3;
+const CARD_BUDGET_BYTES = 14_000;
+const WRITTEN_FILES_BUDGET_BYTES = 2_500;
+const WRITTEN_FILE_PATH_MAX = 80;
 
 interface ToolGroup {
   kind: 'tools';
@@ -22,6 +25,9 @@ export interface RunCardRenderOptions {
   workspaceName?: string;
   durationMs?: number;
   toolStats?: RunToolStats;
+  writtenFiles?: string[];
+  firstToolError?: ToolEntry;
+  showToolDetails?: boolean;
 }
 
 export interface RunToolStats {
@@ -31,8 +37,32 @@ export interface RunToolStats {
   unfinished?: number;
 }
 
+interface MarkdownElement {
+  tag: 'markdown';
+  content: string;
+  text_size?: string;
+}
+
+interface CardBudgetRefs {
+  elements: object[];
+  toolElements: object[];
+  toolCount: number;
+  textElements: Array<{ element: MarkdownElement; content: string }>;
+  answerElement?: MarkdownElement;
+  reasoningElement?: object;
+  writtenFilesElement?: object;
+  writtenFiles?: string[];
+  agentErrorElement?: MarkdownElement;
+}
+
 export function renderCard(state: RunState, options: RunCardRenderOptions = {}): object {
   const elements: object[] = [];
+  const toolElements: object[] = [];
+  const textElements: Array<{ element: MarkdownElement; content: string }> = [];
+  let reasoningElement: object | undefined;
+  let writtenFilesElement: object | undefined;
+  let agentErrorElement: MarkdownElement | undefined;
+  let toolCount = 0;
   const showRunMetadata =
     options.agentName !== undefined ||
     options.workspaceName !== undefined ||
@@ -43,17 +73,39 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   const resultContentStart = elements.length;
 
   if (state.reasoning.content) {
-    elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
+    reasoningElement = reasoningPanel(state.reasoning.content, state.reasoning.active);
+    elements.push(reasoningElement);
   }
 
   for (const group of groupBlocks(state.blocks)) {
     if (group.kind === 'text') {
       if (group.content.trim()) {
-        elements.push(markdown(group.content));
+        const element = markdown(group.content);
+        textElements.push({ element, content: group.content });
+        elements.push(element);
       }
     } else {
-      elements.push(...renderToolGroup(group.tools, state.terminal !== 'running'));
+      const rendered = renderToolGroup(group.tools, state.terminal !== 'running');
+      toolElements.push(...rendered);
+      elements.push(...rendered);
+      toolCount += group.tools.length;
     }
+  }
+
+  const writtenFiles = options.writtenFiles ?? writtenFilesFromState(state);
+  if (writtenFiles.length > 0) {
+    writtenFilesElement = writtenFilesPanel(writtenFiles);
+    elements.push(writtenFilesElement);
+  }
+
+  const errorCount = options.toolStats?.errors ?? toolErrorsFromState(state).length;
+  const showToolDetails = options.showToolDetails !== false;
+  const firstToolError = showToolDetails
+    ? options.firstToolError ?? firstToolErrorFromState(state)
+    : undefined;
+  if (state.terminal !== 'running' && errorCount > 0) {
+    elements.push(noteMd(toolErrorWarning(errorCount, firstToolError !== undefined)));
+    if (firstToolError) elements.push(toolErrorPanel(firstToolError));
   }
 
   if (state.terminal === 'interrupted') {
@@ -62,7 +114,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     const mins = state.idleTimeoutMinutes ?? 0;
     elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
   } else if (state.terminal === 'error' && state.errorMsg) {
-    elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
+    agentErrorElement = noteMd(`⚠️ agent 失败：${state.errorMsg}`);
+    elements.push(agentErrorElement);
   } else if (state.terminal === 'done' && elements.length === resultContentStart) {
     elements.push(noteMd('_（未返回内容）_'));
   }
@@ -76,7 +129,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
 
   // Mask raw emails across every text field so the Feishu tenant audit doesn't
   // reject the (streamed) card with a 400 EMAIL_ADDRESS — see mask-email.ts.
-  return deepMaskEmails({
+  const card = {
     schema: '2.0',
     ...(showRunMetadata ? { header: runHeader(state, options) } : {}),
     config: {
@@ -84,7 +137,206 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
       summary: { content: summaryText(state) },
     },
     body: { elements },
+  };
+  const answerElement = findAnswerElement(textElements, state.finalText);
+  return fitCardPayload(card, {
+    elements,
+    toolElements,
+    toolCount,
+    textElements,
+    answerElement,
+    ...(reasoningElement ? { reasoningElement } : {}),
+    ...(writtenFilesElement && writtenFiles.length > 0 ? { writtenFilesElement, writtenFiles } : {}),
+    ...(agentErrorElement ? { agentErrorElement } : {}),
   });
+}
+
+export function writtenFilesFromState(state: RunState): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  for (const block of state.blocks) {
+    if (block.kind !== 'tool' || block.tool.status !== 'done') continue;
+    if (block.tool.name !== 'Edit' && block.tool.name !== 'Write' && block.tool.name !== 'NotebookEdit') {
+      continue;
+    }
+    if (!block.tool.input || typeof block.tool.input !== 'object') continue;
+    const input = block.tool.input as { file_path?: unknown; notebook_path?: unknown };
+    const targetPaths = block.tool.name === 'NotebookEdit'
+      ? [input.notebook_path, input.file_path]
+      : [input.file_path, input.notebook_path];
+    const path = targetPaths.find(
+      (value): value is string => typeof value === 'string' && value.length > 0,
+    );
+    if (path === undefined || seen.has(path)) continue;
+    seen.add(path);
+    files.push(path);
+  }
+  return files;
+}
+
+export function firstToolErrorFromState(state: RunState): ToolEntry | undefined {
+  return toolErrorsFromState(state)[0];
+}
+
+function toolErrorsFromState(state: RunState): ToolEntry[] {
+  return state.blocks.flatMap((block) =>
+    block.kind === 'tool' && block.tool.status === 'error' ? [block.tool] : [],
+  );
+}
+
+function findAnswerElement(
+  textElements: Array<{ element: MarkdownElement; content: string }>,
+  finalText?: string,
+): MarkdownElement | undefined {
+  const finalAnswer = finalText?.trim();
+  const match = finalAnswer
+    ? [...textElements].reverse().find(({ content }) => content.includes(finalAnswer))
+    : undefined;
+  return match?.element ?? textElements.at(-1)?.element;
+}
+
+function fitCardPayload<T extends { body: { elements: object[] }; header?: unknown }>(
+  card: T,
+  refs: CardBudgetRefs,
+): T {
+  const measure = (): { masked: T; bytes: number } => {
+    const masked = deepMaskEmails(card);
+    return { masked, bytes: cardByteLength(masked) };
+  };
+  let current = measure();
+  if (current.bytes < CARD_BUDGET_BYTES) return current.masked;
+
+  if (refs.reasoningElement) {
+    replaceElements(
+      refs.elements,
+      [refs.reasoningElement],
+      noteMd('⚠️ 载荷预算有限，已省略 1 段思考内容。'),
+    );
+    current = measure();
+  }
+
+  if (current.bytes >= CARD_BUDGET_BYTES && refs.toolElements.length > 0) {
+    replaceElements(
+      refs.elements,
+      refs.toolElements,
+      noteMd(`⚠️ 工具摘要超出载荷预算，已省略 ${refs.toolCount} 项工具调用。`),
+    );
+    current = measure();
+  }
+
+  if (
+    current.bytes >= CARD_BUDGET_BYTES &&
+    refs.writtenFilesElement &&
+    refs.writtenFiles &&
+    refs.writtenFiles.length > 0
+  ) {
+    const compacted = compactWrittenFilesPanel(refs.writtenFiles);
+    replaceElements(refs.elements, [refs.writtenFilesElement], compacted);
+    current = measure();
+  }
+
+  const processTexts = refs.textElements.filter(({ element }) => element !== refs.answerElement);
+  if (current.bytes >= CARD_BUDGET_BYTES && processTexts.length > 0) {
+    replaceElements(
+      refs.elements,
+      processTexts.map(({ element }) => element),
+      noteMd(`⚠️ 载荷预算有限，已省略 ${processTexts.length} 段过程文本。`),
+    );
+    current = measure();
+  }
+
+  if (current.bytes >= CARD_BUDGET_BYTES && refs.answerElement) {
+    fitMarkdownContent(card, refs.answerElement, refs.answerElement.content, '正文');
+    current = measure();
+  }
+
+  if (current.bytes >= CARD_BUDGET_BYTES && refs.agentErrorElement) {
+    fitMarkdownContent(card, refs.agentErrorElement, refs.agentErrorElement.content, 'Agent 错误');
+    current = measure();
+  }
+
+  if (current.bytes >= CARD_BUDGET_BYTES) {
+    compactHeader(card);
+    current = measure();
+  }
+
+  return current.masked;
+}
+
+function cardByteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function replaceElements(elements: object[], removed: object[], replacement: object): void {
+  const removedSet = new Set(removed);
+  const firstIndex = elements.findIndex((element) => removedSet.has(element));
+  if (firstIndex < 0) return;
+  const retained = elements.filter((element) => !removedSet.has(element));
+  retained.splice(Math.min(firstIndex, retained.length), 0, replacement);
+  elements.splice(0, elements.length, ...retained);
+}
+
+function compactWrittenFilesPanel(files: string[]): object {
+  let low = 0;
+  let high = files.length;
+  let visibleCount = 0;
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    const panel = writtenFilesPanel(files, candidate, WRITTEN_FILE_PATH_MAX);
+    const bytes = cardByteLength(deepMaskEmails(panel));
+    if (bytes <= WRITTEN_FILES_BUDGET_BYTES) {
+      visibleCount = candidate;
+      low = candidate + 1;
+    } else {
+      high = candidate - 1;
+    }
+  }
+  return writtenFilesPanel(files, visibleCount, WRITTEN_FILE_PATH_MAX);
+}
+
+function fitMarkdownContent<T extends { body: { elements: object[] }; header?: unknown }>(
+  card: T,
+  element: MarkdownElement,
+  original: string,
+  label: string,
+): void {
+  const characters = Array.from(original);
+  let low = 0;
+  let high = characters.length;
+  let best = -1;
+  while (low <= high) {
+    const visibleCount = Math.floor((low + high) / 2);
+    element.content = truncatedText(characters, visibleCount, label);
+    if (cardByteLength(deepMaskEmails(card)) < CARD_BUDGET_BYTES) {
+      best = visibleCount;
+      low = visibleCount + 1;
+    } else {
+      high = visibleCount - 1;
+    }
+  }
+  element.content = truncatedText(characters, Math.max(0, best), label);
+}
+
+function truncatedText(characters: string[], visibleCount: number, label: string): string {
+  const omitted = characters.length - visibleCount;
+  if (omitted <= 0) return characters.join('');
+  const prefix = characters.slice(0, visibleCount).join('');
+  const omissionNotice = `⚠️ ${label}因载荷预算截断，另有 ${omitted} 个字符未显示。`;
+  return `${prefix}${prefix ? '\n\n' : ''}${omissionNotice}`;
+}
+
+function compactHeader<T extends { header?: unknown }>(card: T): void {
+  const header = card.header as {
+    title?: { content?: string };
+    subtitle?: { content?: string };
+  } | undefined;
+  if (!header) return;
+  if (header.title?.content && Array.from(header.title.content).length > 80) {
+    header.title.content = truncateCodePoints(header.title.content, 80);
+  }
+  if (header.subtitle?.content && Array.from(header.subtitle.content).length > 160) {
+    header.subtitle.content = truncateCodePoints(header.subtitle.content, 160);
+  }
 }
 
 function runHeader(state: RunState, options: RunCardRenderOptions): object {
@@ -153,6 +405,53 @@ function toolStatsText(stats: RunToolStats): string {
   return stats.unfinished === undefined ? counts : `${counts} · 未完成 ${stats.unfinished}`;
 }
 
+function writtenFilesPanel(
+  files: string[],
+  visibleCount = files.length,
+  maxPathCharacters = Number.POSITIVE_INFINITY,
+): object {
+  const visibleFiles = files.slice(0, visibleCount);
+  const truncatedPaths = visibleFiles.filter(
+    (file) => Array.from(file).length > maxPathCharacters,
+  ).length;
+  const lines = visibleFiles.map((file) => `- ${truncateCodePoints(file, maxPathCharacters)}`);
+  if (visibleFiles.length < files.length) {
+    lines.push(`⚠️ 另有 ${files.length - visibleFiles.length} 个文件未显示。`);
+  }
+  if (truncatedPaths > 0) lines.push(`⚠️ ${truncatedPaths} 条路径因载荷限制已截断。`);
+  return {
+    tag: 'collapsible_panel',
+    expanded: false,
+    header: panelHeader(`📝 写入文件清单（${files.length} 个文件）`),
+    border: { color: 'blue', corner_radius: '5px' },
+    vertical_spacing: '8px',
+    padding: '8px 8px 8px 8px',
+    elements: [{ tag: 'markdown', content: lines.join('\n'), text_size: 'notation' }],
+  };
+}
+
+function toolErrorWarning(count: number, detailsVisible: boolean): string {
+  return detailsVisible
+    ? `⚠️ 本轮记录到 ${count} 次工具错误。首个错误详情如下，其余错误已收拢。`
+    : `⚠️ 本轮记录到 ${count} 次工具错误，已按设置隐藏工具详情。`;
+}
+
+function toolErrorPanel(tool: ToolEntry): object {
+  // 先脱敏再截断，避免 @→[at] 扩长后突破 500 字符上限。
+  const output = truncateErrorOutput(maskEmails(tool.output ?? '未返回错误内容'));
+  return collapsiblePanel({
+    title: toolHeaderText(tool),
+    expanded: true,
+    border: 'red',
+    body: `**错误输出**\n\`\`\`\n${output}\n\`\`\``,
+  });
+}
+
+function truncateErrorOutput(output: string): string {
+  const characters = Array.from(output);
+  return characters.length > 500 ? `${characters.slice(0, 499).join('')}…` : output;
+}
+
 function formatDuration(durationMs: number): string {
   const totalSeconds = Math.floor(Math.max(0, durationMs) / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -181,7 +480,7 @@ function* groupBlocks(blocks: Block[]): Generator<Group> {
 function renderToolGroup(tools: ToolEntry[], finalized: boolean): object[] {
   if (tools.length === 0) return [];
   if (tools.length < COLLAPSE_TOOL_THRESHOLD) {
-    return tools.map((t) => toolPanel(t, false));
+    return tools.map((t) => toolPanel(t, false, finalized));
   }
   if (finalized) {
     return [collapsedToolSummary(tools, true)];
@@ -191,7 +490,7 @@ function renderToolGroup(tools: ToolEntry[], finalized: boolean): object[] {
   const latest = tools[tools.length - 1];
   const out: object[] = [];
   if (prior.length > 0) out.push(collapsedToolSummary(prior, false));
-  if (latest) out.push(toolPanel(latest, true));
+  if (latest) out.push(toolPanel(latest, true, false));
   return out;
 }
 
@@ -205,12 +504,15 @@ function reasoningPanel(content: string, active: boolean): object {
   });
 }
 
-function toolPanel(tool: ToolEntry, expanded: boolean): object {
+function toolPanel(tool: ToolEntry, expanded: boolean, finalized: boolean): object {
   return collapsiblePanel({
     title: toolHeaderText(tool),
     expanded,
     border: tool.status === 'error' ? 'red' : 'grey',
-    body: toolBodyMd(tool) || '_无输出_',
+    body:
+      finalized && tool.status === 'error'
+        ? '错误详情已收拢，首个工具错误见下方。'
+        : toolBodyMd(tool) || '_无输出_',
   });
 }
 
@@ -270,11 +572,11 @@ function panelHeader(titleMd: string): object {
   };
 }
 
-function markdown(content: string): object {
+function markdown(content: string): MarkdownElement {
   return { tag: 'markdown', content };
 }
 
-function noteMd(content: string): object {
+function noteMd(content: string): MarkdownElement {
   return { tag: 'markdown', content, text_size: 'notation' };
 }
 
@@ -314,4 +616,15 @@ function summaryText(state: RunState): string {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+function truncateCodePoints(s: string, max: number): string {
+  const characters = Array.from(s);
+  if (characters.length <= max) return s;
+  if (max <= 1) return '…';
+  const startCount = Math.ceil((max - 1) / 2);
+  const endCount = Math.floor((max - 1) / 2);
+  const prefix = characters.slice(0, startCount).join('');
+  const suffix = endCount > 0 ? characters.slice(-endCount).join('') : '';
+  return `${prefix}…${suffix}`;
 }
