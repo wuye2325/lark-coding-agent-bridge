@@ -207,6 +207,39 @@ describe('ClaudeAdapter process contract', () => {
     await iterator.return?.();
   });
 
+  it('快速失败发生在消费前，仍返回失败而非挂住', async () => {
+    const fake = await createFakeClaude({ lines: [], exitCode: 1, stderr: 'No conversation found with session ID: expired' });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'early-exit', prompt: 'hi', cwd: fake.dir });
+    expect(await run.waitForExit(2000)).toBe(true);
+    const events = await collect(run.events);
+    expect(events).toEqual([expect.objectContaining({ type: 'error', message: expect.stringContaining('No conversation found') })]);
+  });
+
+  it('迟来的消费者仍能读到成功输出', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'late' }] });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'late', prompt: 'hi', cwd: fake.dir });
+    expect(await run.waitForExit(2000)).toBe(true);
+    expect(await collect(run.events)).toEqual([{ type: 'done', sessionId: 'late', terminationReason: 'normal' }]);
+  });
+
+  it('后代进程占住 stdout 也不能阻止失败收尾', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }], exitCode: 1, descendant: true });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'pipe', prompt: 'hi', cwd: fake.dir });
+    expect(await run.waitForExit(2000)).toBe(true);
+    const events = await collect(run.events);
+    expect(events.map((e) => e.type)).toEqual(['text', 'error']);
+  }, 2500);
+
+  it('正常退出但没有 result 时明确失败', async () => {
+    const fake = await createFakeClaude({ lines: [] });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'empty', prompt: 'hi', cwd: fake.dir });
+    expect(await collect(run.events)).toEqual([expect.objectContaining({ type: 'error', message: expect.stringContaining('without a result') })]);
+  });
+
   it('requires cwd to be resolved by policy before spawning', () => {
     expect(() =>
       new ClaudeAdapter({ binary: 'unused' }).run({ runId: 'run-no-cwd', prompt: 'hi' }),
@@ -225,6 +258,7 @@ async function createFakeClaude(options: {
   stderr?: string;
   exitCode?: number;
   exitDelayMs?: number;
+  descendant?: boolean;
 }): Promise<FakeBinary> {
   const dir = await mkdtemp(join(tmpdir(), 'claude-adapter-test-'));
   const path = join(dir, 'fake-claude.mjs');
@@ -233,6 +267,7 @@ async function createFakeClaude(options: {
     path,
     [
       '#!/usr/bin/env node',
+      'import { spawn } from "node:child_process";',
       'import { writeFileSync, readFileSync } from "node:fs";',
       'const argv = process.argv.slice(2);',
       'const spIdx = argv.indexOf("--append-system-prompt-file");',
@@ -256,6 +291,7 @@ async function createFakeClaude(options: {
       '  }));',
       `  const lines = ${JSON.stringify(options.lines)};`,
       '  for (const line of lines) console.log(JSON.stringify(line));',
+      options.descendant ? `  const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], { stdio: ['ignore', 1, 2] }); descendant.unref();` : '',
       options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
       `  setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
       '});',

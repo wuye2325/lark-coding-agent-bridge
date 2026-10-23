@@ -141,6 +141,8 @@ export interface AppPreferences {
    * can hang indefinitely). Per-scope `/timeout` overrides this.
    */
   runIdleTimeoutMinutes?: number;
+  /** 连续无实际进展的上限，工具执行期间仍计时；默认 60 分钟。 */
+  runNoProgressTimeoutMinutes?: number;
   /**
    * Whether the bot only responds to messages that @-mention it in groups
    * (regular and topic groups). p2p is always unrestricted. Default true:
@@ -283,4 +285,11 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+/** 独立于 /timeout；未配置或非法值均使用 60 分钟，范围 1 至 1440。 */
+export function getRunNoProgressTimeoutMs(cfg: Pick<AppConfig, 'preferences'>): number {
+  const raw = cfg.preferences?.runNoProgressTimeoutMinutes;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return 60 * 60_000;
+  return Math.min(1440, Math.max(1, Math.floor(raw))) * 60_000;
 }

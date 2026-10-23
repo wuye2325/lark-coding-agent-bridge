@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
+import { claudeSessionExists } from '../../session/history';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
@@ -53,6 +54,10 @@ export class ClaudeAdapter implements AgentAdapter {
       command: this.binary,
       binaryPath: this.binary,
     });
+  }
+
+  hasSession(sessionId: string, cwd: string): Promise<boolean> {
+    return claudeSessionExists(cwd, sessionId);
   }
 
   run(opts: AgentRunOptions): AgentRun {
@@ -144,6 +149,12 @@ export class ClaudeAdapter implements AgentAdapter {
     return {
       runId: opts.runId,
       events: createEventStream(child, stderrChunks, () => runtimeError),
+      destroy() {
+        child.kill('SIGKILL');
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.stdin.destroy();
+      },
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
@@ -186,88 +197,90 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 }
 
-async function* createEventStream(
+function createEventStream(
   child: ClaudeChild,
   stderrChunks: Buffer[],
   getError: () => Error | null,
-): AsyncGenerator<AgentEvent> {
-  // If fork itself failed synchronously, child.pid is undefined. The 'error'
-  // event (ENOENT etc.) fires in the next tick, so also check getError().
-  if (!child.pid) {
-    const err = getError();
-    yield {
-      type: 'error',
-      message: err ? `failed to spawn claude: ${err.message}` : 'spawn returned no pid',
-      terminationReason: 'failed',
-    };
-    return;
-  }
-
+): AsyncIterable<AgentEvent> {
+  // 同步消费并缓存输出，避免迟来的消费者错过 line、close 或 exit。
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-  let sawStdout = false;
-  let silentExitTimer: ReturnType<typeof setTimeout> | undefined;
-  const closeSilentStdout = (): void => {
-    silentExitTimer = setTimeout(() => {
-      if (!sawStdout && !child.stdout.readableEnded) child.stdout.destroy();
-    }, 50);
-  };
-  child.once('exit', closeSilentStdout);
-  try {
-    for await (const line of rl) {
-      sawStdout = true;
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
-      yield* translateEvent(parsed);
-    }
-  } finally {
-    if (silentExitTimer) clearTimeout(silentExitTimer);
-    child.removeListener('exit', closeSilentStdout);
-    rl.close();
-  }
-
-  const earlyRuntimeError = getError();
-  if (earlyRuntimeError && child.exitCode === null && child.signalCode === null) {
-    yield {
-      type: 'error',
-      message: `claude runtime error: ${earlyRuntimeError.message}`,
-      terminationReason: 'failed',
-    };
-    return;
-  }
-
-  // When the child is killed by a signal, exitCode stays null and signalCode
-  // carries the name. Both must be checked or we'll attach an 'exit' listener
-  // for an event that already fired and hang forever.
-  const exitCode = await new Promise<number | null>((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resolve(child.exitCode);
-    } else {
-      child.once('exit', (code) => resolve(code));
-    }
+  const lines: string[] = [];
+  let closed = false;
+  let wake: (() => void) | undefined;
+  let exitTimer: ReturnType<typeof setTimeout> | undefined;
+  let resolveExit!: () => void;
+  const exited = new Promise<void>((resolve) => {
+    resolveExit = resolve;
   });
-
-  const runtimeError = getError();
-  if (exitCode !== 0 && exitCode !== null) {
-    const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-    const detail = stderr ? `: ${stderr.slice(0, 500)}` : '';
-    yield {
-      type: 'error',
-      message: `claude exited with code ${exitCode}${detail}`,
-      terminationReason: 'failed',
-    };
-  } else if (runtimeError) {
-    yield {
-      type: 'error',
-      message: `claude runtime error: ${runtimeError.message}`,
-      terminationReason: 'failed',
-    };
-  }
+  const finish = (): void => {
+    closed = true;
+    wake?.();
+  };
+  rl.on('line', (line) => {
+    lines.push(line);
+    wake?.();
+  });
+  rl.once('close', finish);
+  child.once('error', () => {
+    resolveExit();
+    rl.close();
+    finish();
+  });
+  child.once('exit', () => {
+    resolveExit();
+    // 允许管道排空，但后代进程持有写端不能无限阻塞本轮。
+    exitTimer = setTimeout(() => {
+      child.stdout.destroy();
+      rl.close();
+      finish();
+    }, 100);
+    exitTimer.unref();
+  });
+  return {
+    async *[Symbol.asyncIterator]() {
+      let index = 0;
+      try {
+        while (!closed || index < lines.length) {
+          if (index === lines.length) {
+            lines.length = 0;
+            index = 0;
+            await new Promise<void>((resolve) => {
+              wake = resolve;
+            });
+            wake = undefined;
+            continue;
+          }
+          const line = lines[index++]!.trim();
+          if (!line) continue;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          for (const event of translateEvent(parsed)) {
+            yield event;
+            if (event.type === 'done' || event.type === 'error') return;
+          }
+        }
+        await exited;
+        const error = getError();
+        const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+        yield {
+          type: 'error',
+          message: error
+            ? `${child.pid ? 'claude runtime error' : 'failed to spawn claude'}: ${error.message}`
+            : child.signalCode
+              ? `claude terminated by ${child.signalCode}`
+              : `claude exited with code ${child.exitCode}${child.exitCode === 0 ? ' without a result' : ''}${stderr ? `: ${stderr.slice(0, 500)}` : ''}`,
+          terminationReason: 'failed',
+        };
+      } finally {
+        if (exitTimer) clearTimeout(exitTimer);
+        rl.close();
+      }
+    },
+  };
 }
 
 /**

@@ -1,3 +1,5 @@
+import { log } from '../core/logger';
+import { getRunNoProgressTimeoutMs } from '../config/schema';
 import type { AgentCapability } from '../agent/capability';
 import { resolveModelArg, resolveReasoningEffort } from '../agent/models';
 import type { AgentEvent } from '../agent/types';
@@ -16,7 +18,7 @@ import {
   type WorkingDirectoryResolveResult,
 } from '../policy/workspace';
 import type { RunExecution, RunExecutor } from '../runtime/run-executor';
-import { RunRejected, type RunRejectedCode } from '../runtime/errors';
+import { RunRejected, SpawnFailed, type RunRejectedCode, type SpawnFailedCode } from '../runtime/errors';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -35,6 +37,7 @@ export interface StartRunFlowInput {
   executor: RunExecutor;
   now: number;
   stopGraceMs?: number;
+  onSessionReset?: (message: string) => Promise<void>;
   observability?: {
     profile: string;
     agent: string;
@@ -46,7 +49,8 @@ export interface StartRunFlowInput {
 export type RunFlowRejectCode =
   | WorkingDirectoryRejectReason
   | RunPolicyReject['rejectReason']['code']
-  | RunRejectedCode;
+  | RunRejectedCode
+  | SpawnFailedCode;
 
 export type StartRunFlowResult =
   | {
@@ -137,6 +141,26 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     }
   }
 
+  const resetSession = async (): Promise<void> => {
+    input.sessionCatalog?.archiveActive({
+      scopeId: input.scopeId, agentId: 'claude',
+      cwdRealpath: workspace.cwdRealpath, policyFingerprint: policy.policyFingerprint,
+    });
+    input.sessions.clear(input.scopeId);
+    log.warn('session', 'fallback', {
+      scope: input.scopeId, chatId: input.scope.chatId, reason: 'transcript-unavailable',
+    });
+    await Promise.all([input.sessions.flush(), input.sessionCatalog?.flush()]);
+    await input.onSessionReset?.('旧会话已失效，已开启新会话；关键背景可能需要补充。').catch((err) => {
+      log.fail('session', err, { scope: input.scopeId, step: 'fallback-notice' });
+    });
+  };
+  if (sessionId && !await input.executor.hasSession(sessionId, workspace.cwdRealpath)) {
+    await resetSession();
+    sessionId = undefined;
+    resumeFrom = undefined;
+  }
+
   let execution: RunExecution;
   try {
     execution = await input.executor.submit({
@@ -144,6 +168,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       policy,
       sessionId,
       threadId,
+      ...(input.capability.agentId === 'claude' ? {
+        onSessionInvalid: resetSession,
+        noProgressTimeoutMs: getRunNoProgressTimeoutMs({ preferences: input.profileConfig.preferences }),
+      } : {}),
       model: resolveModelArg(
         input.profileConfig.agentKind,
         input.profileConfig.preferences.model,
@@ -166,6 +194,17 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       observability: input.observability,
     });
   } catch (err) {
+    if (err instanceof SpawnFailed) {
+      log.fail('run-flow', err, { scope: input.scopeId, step: 'spawn' });
+      return {
+        ok: false,
+        rejectReason: {
+          code: err.code,
+          userVisible: spawnFailureMessage(err),
+        },
+        workspace,
+      };
+    }
     if (err instanceof RunRejected) {
       return {
         ok: false,
@@ -216,4 +255,17 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
       threadId: input.event.threadId,
     });
   }
+}
+
+function spawnFailureMessage(err: SpawnFailed): string {
+  const causeCode = err.cause && typeof err.cause === 'object' && 'code' in err.cause
+    ? err.cause.code : undefined;
+  const code = err.diagnostic?.errno ?? causeCode;
+  // 仅展示已知错误的解释，避免把底层命令、路径或凭证发送到群聊。
+  const hint = code === 'ENOSPC'
+    ? '磁盘空间不足，请清理磁盘空间后重发。'
+    : code === 'EACCES' || code === 'EPERM'
+      ? '权限不足，请检查文件和目录权限，以及代理可执行权限后重发。'
+      : '请联系维护者查看启动日志，处理后重发。';
+  return `代理启动失败（${err.code}），本轮已结束。${hint}后续消息可继续处理。`;
 }

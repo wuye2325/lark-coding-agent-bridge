@@ -24,7 +24,7 @@ export type AgentEvent =
       threadId?: string;
       terminationReason: 'normal' | 'interrupted' | 'timeout';
     }
-  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout' };
+  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout'; timeoutMinutes?: number };
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
@@ -59,6 +59,8 @@ export interface AgentRun {
   readonly runId: string;
   readonly events: AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
+  /** 强制停止并关闭管道，用于停止后事件流仍未收尾的兜底。 */
+  destroy?(): void;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer
@@ -90,6 +92,8 @@ export interface AgentAdapter {
   checkAvailability?(): Promise<AgentAvailability>;
   prepareRun?(opts: AgentRunOptions): Promise<void>;
   run(opts: AgentRunOptions): AgentRun;
+  /** 检查本地会话是否仍可恢复；没有该能力的适配器不预检。 */
+  hasSession?(sessionId: string, cwd: string): Promise<boolean>;
   /**
    * Late-bound identity injection: the adapter is constructed before the
    * channel connects, so the channel calls this once botIdentity is known.

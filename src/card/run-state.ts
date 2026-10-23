@@ -114,6 +114,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       return {
         ...state,
         terminal,
+        ...(evt.timeoutMinutes !== undefined ? { idleTimeoutMinutes: evt.timeoutMinutes } : {}),
         errorMsg: terminal === 'error' ? evt.message : state.errorMsg,
         footer: null,
       };

@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { AgentAdapter, AgentRun, AgentRunOptions } from '../../../src/agent/types';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
+import { initialState, reduce } from '../../../src/card/run-state';
+import { renderText } from '../../../src/card/text-renderer';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { RunRejected, SpawnFailed } from '../../../src/runtime/errors';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
@@ -15,6 +17,7 @@ import {
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
@@ -229,6 +232,78 @@ describe('RunExecutor', () => {
     expect(h.activeRuns.get('scope-1')).toBeUndefined();
   });
 
+  it('有实际进展可运行超过两小时，无进展满一小时准确显示超时并放行', async () => {
+    const control = controlledAgent();
+    const h = await createHarness({ agent: control.agent, poolCap: 1 });
+    vi.useFakeTimers();
+    const execution = await h.executor.submit({ scopeId: 'scope-1', policy: policy(h.tmp.workspace), noProgressTimeoutMs: 60 * 60_000 });
+    const events = collect(execution.subscribe());
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(40 * 60_000);
+      control.emit(i === 1
+        ? { type: 'tool_result', id: '0', output: '完成', isError: false }
+        : i === 2 ? { type: 'text', delta: '继续处理' }
+        : { type: 'tool_use', id: String(i), name: 'Bash', input: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(control.run.stop).not.toHaveBeenCalled();
+    }
+    await vi.advanceTimersByTimeAsync(59 * 60_000);
+    control.emit({ type: 'usage', inputTokens: 100 });
+    control.emit({ type: 'thinking', delta: '内部思考不延长计时' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const result = await events as AgentEvent[];
+    expect(result).toContainEqual(expect.objectContaining({ type: 'error', terminationReason: 'timeout', timeoutMinutes: 60 }));
+    const state = result.reduce(reduce, initialState);
+    expect(renderText(state)).toContain('60 分钟无响应');
+    expect(h.activeRuns.get('scope-1')).toBeUndefined();
+    expect(h.pool.snapshot().active).toBe(0);
+    const next = await h.executor.submit({ scopeId: 'scope-1', policy: policy(h.tmp.workspace), nowait: true });
+    await next.stop();
+  });
+
+  it('不响应停止的事件流也会被强制结束，重复停止不泄漏名额', async () => {
+    const control = controlledAgent(true);
+    const h = await createHarness({ agent: control.agent, poolCap: 1 });
+    vi.useFakeTimers();
+    const execution = await h.executor.submit({ scopeId: 'scope-1', policy: policy(h.tmp.workspace), stopGraceMs: 1 });
+    const events = collect(execution.subscribe());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.activeRuns.interrupt('scope-1')).toBe(true);
+    const stopped = execution.stop();
+    await vi.advanceTimersByTimeAsync(3000);
+    await stopped;
+    expect(await events).toContainEqual(expect.objectContaining({ terminationReason: 'interrupted' }));
+    expect(control.run.destroy).toHaveBeenCalledTimes(1);
+    expect(h.pool.snapshot()).toMatchObject({ active: 0, waiting: 0 });
+  });
+
+  it('仅明确的启动阶段会话失效可重试一次，保留 init 的及时通知', async () => {
+    const agent = new FakeAgentAdapter({ id: 'claude', events: [
+      [{ type: 'system', sessionId: 'expired' }, { type: 'error', message: 'No conversation found with session ID: expired', terminationReason: 'failed' }],
+      [{ type: 'system', sessionId: 'fresh' }, { type: 'done', terminationReason: 'normal' }],
+    ] });
+    const h = await createHarness({ agent });
+    const reset = vi.fn(async () => {});
+    const execution = await h.executor.submit({ scopeId: 'scope-1', policy: policy(h.tmp.workspace), sessionId: 'expired', onSessionInvalid: reset });
+    expect(await collect(execution.subscribe())).toEqual([{ type: 'system', sessionId: 'expired' }, { type: 'system', sessionId: 'fresh' }, { type: 'done', terminationReason: 'normal' }]);
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(agent.runOptions.map((o) => o.sessionId)).toEqual(['expired', undefined]);
+  });
+
+  it.each(['tool', 'text', 'network', 'twice'])('重试边界：%s 失败不得重复执行', async (kind) => {
+    const failure: AgentEvent = { type: 'error', message: kind === 'network' ? 'network unavailable' : 'No conversation found with session ID: expired', terminationReason: 'failed' };
+    const first: AgentEvent[] = kind === 'tool' ? [{ type: 'tool_use', id: '1', name: 'Bash', input: {} }, failure]
+      : kind === 'text' ? [{ type: 'text', delta: '已经开始' }, failure] : [failure];
+    const agent = new FakeAgentAdapter({ id: 'claude', events: [first, [failure]] });
+    const h = await createHarness({ agent });
+    const reset = vi.fn(async () => {});
+    const execution = await h.executor.submit({ scopeId: 'scope-1', policy: policy(h.tmp.workspace), sessionId: 'expired', onSessionInvalid: reset });
+    expect(await collect(execution.subscribe())).toContainEqual(failure);
+    expect(agent.runOptions).toHaveLength(kind === 'twice' ? 2 : 1);
+    expect(reset).toHaveBeenCalledTimes(kind === 'twice' ? 1 : 0);
+  });
+
   it('stops and waits for the underlying run when execution is interrupted', async () => {
     const h = await createHarness({
       events: [{ type: 'text', delta: 'running' }],
@@ -259,7 +334,7 @@ describe('RunExecutor', () => {
     await collect(execution.subscribe());
 
     const run = execution.run as FakeAgentRun;
-    expect(run.waitForExitCalls).toBe(1);
+    expect(run.waitForExitCalls).toBe(2);
     expect(run.stopped).toBe(true);
     expect(h.activeRuns.get('scope-1')).toBeUndefined();
     expect(h.pool.snapshot()).toMatchObject({ active: 0, waiting: 0 });
@@ -363,4 +438,29 @@ class DelayedPrepareAgent extends FakeAgentAdapter {
   releasePrepare(): void {
     this.resolvePrepare();
   }
+}
+
+function controlledAgent(ignoreStop = false) {
+  const queue: AgentEvent[] = [];
+  let done = false;
+  let wake: (() => void) | undefined;
+  const end = () => { done = true; wake?.(); };
+  const run: AgentRun = {
+    runId: 'controlled',
+    events: { async *[Symbol.asyncIterator]() {
+      while (!done || queue.length) {
+        const event = queue.shift();
+        if (event) yield event;
+        else await new Promise<void>((resolve) => { wake = resolve; });
+      }
+    } },
+    stop: vi.fn(() => ignoreStop ? new Promise<void>(() => {}) : Promise.resolve(end())),
+    waitForExit: vi.fn(async () => true),
+    destroy: vi.fn(end),
+  };
+  return {
+    run,
+    emit: (event: AgentEvent) => { queue.push(event); wake?.(); },
+    agent: { id: 'claude', displayName: 'Claude', isAvailable: async () => true, run: () => run } satisfies AgentAdapter,
+  };
 }

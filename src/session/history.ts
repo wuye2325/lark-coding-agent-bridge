@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { normalizeSessionPreview } from './preview';
 
@@ -17,7 +17,20 @@ function encodeCwd(cwd: string): string {
 }
 
 function claudeProjectDir(cwd: string): string {
-  return join(homedir(), '.claude', 'projects', encodeCwd(cwd));
+  return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects', encodeCwd(cwd));
+}
+
+/** 只把文件确实不存在视为失效，权限或 I/O 错误交给调用者处理。 */
+export async function claudeSessionExists(cwd: string, sessionId: string): Promise<boolean> {
+  if (!/^[a-zA-Z0-9-]+$/.test(sessionId)) return false;
+  // 相对配置目录的解析依赖子进程 cwd，无法确定时交给 CLI 明确诊断。
+  if (process.env.CLAUDE_CONFIG_DIR && !isAbsolute(process.env.CLAUDE_CONFIG_DIR)) return true;
+  try {
+    return (await stat(join(claudeProjectDir(cwd), `${sessionId}.jsonl`))).isFile();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw err;
+  }
 }
 
 /** Return the most recent `limit` jsonl sessions for the given cwd, newest first. */

@@ -37,6 +37,7 @@ import {
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRunIdleTimeoutMs,
+  getRunNoProgressTimeoutMs,
   getShowToolCalls,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
@@ -205,7 +206,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     ? new CallbackRegistryStore(join(dirname(deps.appPaths.mediaDir), 'callback-registry.json'))
     : undefined;
   await callbackRegistry?.endAllRuns();
-  const executor = new RunExecutor({ agent, pool, activeRuns, callbackRegistry });
+  const executor = new RunExecutor({
+    agent, pool, activeRuns, callbackRegistry,
+    noProgressTimeoutMs: () => getRunNoProgressTimeoutMs(controls.cfg),
+  });
   const callbackAuth = callbackNonceStore
     ? new CallbackAuth({
         keys: [{ version: 1, secret: appSecret }],
@@ -1042,6 +1046,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     workspaces,
     executor,
     now: Date.now(),
+    onSessionReset: async (message) => {
+      await channel.send(chatId, { markdown: message }, sendOpts);
+    },
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     observability: {
       profile: controls.profile,
