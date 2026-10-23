@@ -19,7 +19,13 @@ import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { CallbackRegistryStore } from '../card/callback-registry';
-import { renderCard, type RunCardRenderOptions, type RunToolStats } from '../card/run-renderer';
+import {
+  firstToolErrorFromState,
+  renderCard,
+  writtenFilesFromState,
+  type RunCardRenderOptions,
+  type RunToolStats,
+} from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -1150,6 +1156,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     workspaceName: basename(cwd),
     ...(runTiming.durationMs !== undefined ? { durationMs: runTiming.durationMs } : {}),
     toolStats: runToolStats(state),
+    writtenFiles: writtenFilesFromState(state),
+    showToolDetails: getShowToolCalls(controls.cfg),
+    ...(getShowToolCalls(controls.cfg) ? { firstToolError: firstToolErrorFromState(state) } : {}),
   });
 
   // For non-card modes Claude's output doesn't surface visually until either

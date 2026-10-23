@@ -727,6 +727,8 @@ describe('CoT 与最终结果卡片联动', () => {
         expect(finalContent.markdown).toBeUndefined();
         expect(finalJson).toContain('工具调用：2 次 · 成功 1 · 错误 1');
         expect(finalJson).toContain('已完成 · 1 次工具错误');
+        if (showToolCalls) expect(finalJson).toContain('MATRIX_ERROR_OUTPUT');
+        else expect(finalJson).not.toContain('MATRIX_ERROR_OUTPUT');
       }
 
       if (cotMessages === 'off') {
@@ -760,6 +762,111 @@ describe('CoT 与最终结果卡片联动', () => {
       }
     },
   );
+
+  it('在 CoT 工具隐藏后仍从完整运行记录展示写入清单，并隐藏失败详情', async () => {
+    const cotBodies: string[] = [];
+    mockCotApi(false, false, cotBodies);
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'brief',
+      events: [
+        { type: 'tool_use', id: 'edit', name: 'Edit', input: { file_path: 'src/写入文件.ts' } },
+        { type: 'tool_result', id: 'edit', output: 'updated', isError: false },
+        { type: 'tool_use', id: 'write', name: 'Write', input: { file_path: 'src/写入文件.ts' } },
+        { type: 'tool_result', id: 'write', output: 'written', isError: false },
+        {
+          type: 'tool_use',
+          id: 'notebook',
+          name: 'NotebookEdit',
+          input: { notebook_path: 'analysis/book.ipynb' },
+        },
+        { type: 'tool_result', id: 'notebook', output: 'updated', isError: false },
+        { type: 'tool_use', id: 'failed-edit', name: 'Edit', input: { file_path: 'private/failed.ts' } },
+        { type: 'tool_result', id: 'failed-edit', output: 'CONFIDENTIAL_ERROR_DETAIL', isError: true },
+        { type: 'final_text', content: '清单入口最终答复' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_hidden_manifest', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    const resultJson = lastCard(h.channel);
+    expect(resultJson).toContain('清单入口最终答复');
+    expect(resultJson).toContain('📝 写入文件清单（2 个文件）');
+    expect(resultJson).toContain('src/写入文件.ts');
+    expect(resultJson).toContain('analysis/book.ipynb');
+    expect(resultJson).toContain('工具调用：4 次 · 成功 3 · 错误 1');
+    expect(resultJson).toContain('已完成 · 1 次工具错误');
+    expect(resultJson).not.toMatch(/private\/failed\.ts|CONFIDENTIAL_ERROR_DETAIL|Edit|Write|NotebookEdit/);
+    expect(cotBodies.join('\n')).not.toMatch(
+      /private\/failed\.ts|CONFIDENTIAL_ERROR_DETAIL|Edit|Write|NotebookEdit/,
+    );
+  });
+
+  it('长答复与长写入路径从消息入口投影后仍满足整卡 UTF-8 预算', async () => {
+    const cotBodies: string[] = [];
+    mockCotApi(false, false, cotBodies);
+    const finalAnswer = `FINAL_ANSWER_START ${'关键答复'.repeat(7_000)} user@example.com`;
+    const events: AgentEvent[] = [
+      { type: 'tool_use', id: 'budget-error', name: 'Bash', input: { command: 'verify' } },
+      { type: 'tool_result', id: 'budget-error', output: 'HIDDEN_BUDGET_ERROR', isError: true },
+    ];
+    for (let index = 0; index < 20; index += 1) {
+      const id = `budget-write-${index}`;
+      events.push({
+        type: 'tool_use',
+        id,
+        name: 'Write',
+        input: { file_path: `user${index}@example.com/${'长路径'.repeat(100)}` },
+      });
+      events.push({ type: 'tool_result', id, output: 'written', isError: false });
+    }
+    events.push(
+      { type: 'final_text', content: finalAnswer },
+      { type: 'done', terminationReason: 'normal' },
+    );
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'brief',
+      events,
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_card_budget', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    const resultJson = lastCard(h.channel);
+    const resultCard = JSON.parse(resultJson) as {
+      body?: {
+        elements?: Array<{
+          tag?: string;
+          columns?: Array<{
+            elements?: Array<{ behaviors?: Array<{ value?: Record<string, unknown> }> }>;
+          }>;
+        }>;
+      };
+    };
+    const actionColumnSet = resultCard.body?.elements?.find((element) => element.tag === 'column_set');
+    const actionCommands = actionColumnSet?.columns?.flatMap((column) =>
+      column.elements?.flatMap((element) => element.behaviors?.map((behavior) => behavior.value?.cmd) ?? []) ?? [],
+    );
+
+    expect(Buffer.byteLength(resultJson, 'utf8')).toBeLessThan(15_000);
+    expect(resultJson).toContain('FINAL_ANSWER_START');
+    expect(resultJson).toContain('已完成 · 1 次工具错误');
+    expect(resultJson).toContain('📝 写入文件清单（20 个文件）');
+    expect(resultJson).toContain('另有');
+    expect(resultJson).not.toMatch(/HIDDEN_BUDGET_ERROR|@example\.com/);
+    expect(resultJson).toContain('[at]example.com');
+    expect(actionCommands).toEqual(['prompt.test', 'prompt.diff', 'session.new']);
+    expect(cotBodies.join('\n')).not.toMatch(/HIDDEN_BUDGET_ERROR|user\d+@example\.com/);
+  });
 
   it('正常结束但没有正文时仍发送状态与摘要卡片', async () => {
     const cotUrls = mockCotApi(false);

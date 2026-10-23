@@ -140,6 +140,37 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
         "vertical_spacing": "8px",
       },
       {
+        "border": {
+          "color": "blue",
+          "corner_radius": "5px",
+        },
+        "elements": [
+          {
+            "content": "- /repo/a.ts",
+            "tag": "markdown",
+            "text_size": "notation",
+          },
+        ],
+        "expanded": false,
+        "header": {
+          "icon": {
+            "size": "16px 16px",
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+          },
+          "icon_expanded_angle": -180,
+          "icon_position": "follow_text",
+          "title": {
+            "content": "📝 写入文件清单（1 个文件）",
+            "tag": "markdown",
+          },
+          "vertical_align": "center",
+        },
+        "padding": "8px 8px 8px 8px",
+        "tag": "collapsible_panel",
+        "vertical_spacing": "8px",
+      },
+      {
         "columns": [
           {
             "elements": [
@@ -1116,9 +1147,43 @@ exports[`run card renderer snapshots > renders tool running, done, and error sta
         },
         "elements": [
           {
-            "content": "**File** \`/missing.ts\`
-
-**Error**
+            "content": "错误详情已收拢，首个工具错误见下方。",
+            "tag": "markdown",
+            "text_size": "notation",
+          },
+        ],
+        "expanded": false,
+        "header": {
+          "icon": {
+            "size": "16px 16px",
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+          },
+          "icon_expanded_angle": -180,
+          "icon_position": "follow_text",
+          "title": {
+            "content": "❌ **Read** — /missing.ts",
+            "tag": "markdown",
+          },
+          "vertical_align": "center",
+        },
+        "padding": "8px 8px 8px 8px",
+        "tag": "collapsible_panel",
+        "vertical_spacing": "8px",
+      },
+      {
+        "content": "⚠️ 本轮记录到 1 次工具错误。首个错误详情如下，其余错误已收拢。",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
+      {
+        "border": {
+          "color": "red",
+          "corner_radius": "5px",
+        },
+        "elements": [
+          {
+            "content": "**错误输出**
 \`\`\`
 ENOENT
 \`\`\`",
@@ -1126,7 +1191,7 @@ ENOENT
             "text_size": "notation",
           },
         ],
-        "expanded": false,
+        "expanded": true,
         "header": {
           "icon": {
             "size": "16px 16px",
