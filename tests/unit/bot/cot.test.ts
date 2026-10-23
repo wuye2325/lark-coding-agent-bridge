@@ -91,6 +91,155 @@ describe('COT event mapping', () => {
     expect(JSON.stringify(client.events)).toContain('仍展示安全的过程文本');
   });
 
+  it('advances through generalized stages with hidden tools without publishing the final answer', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-hidden-stage-progress',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+      showTools: () => false,
+    });
+    await publisher.start();
+
+    await consumeCotEvents(iterate([
+      { type: 'tool_use', id: 'tool-secret', name: 'Bash', input: { command: 'private command' } },
+      { type: 'tool_result', id: 'tool-secret', output: 'private output', isError: false },
+      { type: 'final_text', content: 'FINAL_ANSWER_STAYS_OUT_OF_COT' },
+      { type: 'done', terminationReason: 'normal' },
+    ]), publisher, { detail: 'brief', showTools: () => false });
+
+    const started = client.events
+      .filter((event) => event.event_type === 'STEP_STARTED')
+      .map((event) => JSON.parse(event.content));
+    const finished = client.events
+      .filter((event) => event.event_type === 'STEP_FINISHED')
+      .map((event) => JSON.parse(event.content));
+    expect(started.map((step) => step.stepName)).toEqual([
+      '理解用户问题',
+      '处理任务',
+      '整理结果',
+    ]);
+    expect(finished.map((step) => step.stepId)).toEqual(started.map((step) => step.stepId));
+    expect(JSON.stringify(client.events)).not.toMatch(/Bash|private command|private output|FINAL_ANSWER_STAYS_OUT_OF_COT/);
+    expect(client.events.map((event) => event.event_type)).not.toContain('TOOL_CALL_START');
+    expect(client.events.find((event) => event.event_type === 'RUN_FINISHED')?.content)
+      .toContain('"status":"done"');
+    expect(client.completed).toEqual(['done']);
+  });
+
+  it('preserves the Agent error message and terminal reason while tools are hidden', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-hidden-tool-error',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+      showTools: () => false,
+    });
+    await publisher.start();
+
+    await consumeCotEvents(iterate([
+      { type: 'tool_use', id: 'tool-secret', name: 'Bash', input: { command: 'private command' } },
+      {
+        type: 'error',
+        message: 'Agent run timed out while waiting for a response',
+        terminationReason: 'timeout',
+      },
+    ]), publisher, { detail: 'brief', showTools: () => false });
+
+    const started = client.events
+      .filter((event) => event.event_type === 'STEP_STARTED')
+      .map((event) => JSON.parse(event.content));
+    const finished = client.events
+      .filter((event) => event.event_type === 'STEP_FINISHED')
+      .map((event) => JSON.parse(event.content));
+    const error = client.events.find((event) => event.event_type === 'RUN_ERROR');
+    expect(finished.map((step) => step.stepId)).toEqual(started.map((step) => step.stepId));
+    expect(JSON.parse(error?.content ?? '{}')).toMatchObject({
+      code: 'timeout',
+      message: 'Agent run timed out while waiting for a response',
+    });
+    expect(client.events.map((event) => event.event_type)).not.toContain('TOOL_CALL_START');
+    expect(client.events.some((event) => event.event_type === 'RUN_FINISHED')).toBe(false);
+    expect(client.completed).toEqual(['error']);
+  });
+
+  it('closes stages for interruption, timeout, and stream EOF', async () => {
+    const scenarios: Array<{
+      runId: string;
+      events: AgentEvent[];
+      finishedStatus?: string;
+      completedReason: string;
+    }> = [
+      {
+        runId: 'run-interrupted-stage',
+        events: [
+          { type: 'tool_use', id: 'tool-hidden', name: 'Bash', input: { command: 'private command' } },
+          { type: 'done', terminationReason: 'interrupted' },
+        ],
+        finishedStatus: 'interrupted',
+        completedReason: 'error',
+      },
+      {
+        runId: 'run-timeout-stage',
+        events: [
+          { type: 'tool_use', id: 'tool-hidden', name: 'Bash', input: { command: 'private command' } },
+          { type: 'done', terminationReason: 'timeout' },
+        ],
+        finishedStatus: 'timeout',
+        completedReason: 'error',
+      },
+      {
+        runId: 'run-ended-without-terminal',
+        events: [
+          { type: 'tool_use', id: 'tool-hidden', name: 'Bash', input: { command: 'private command' } },
+        ],
+        completedReason: 'done',
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const client = new FakeCotClient();
+      const publisher = new CotPublisher({
+        client,
+        chatId: 'oc_chat',
+        originMessageId: 'om_origin',
+        runId: scenario.runId,
+        scope: 'oc_chat',
+        inputPreview: 'run',
+        showTools: () => false,
+      });
+      await publisher.start();
+      await consumeCotEvents(iterate(scenario.events), publisher, {
+        detail: 'brief',
+        showTools: () => false,
+      });
+
+      const started = client.events
+        .filter((event) => event.event_type === 'STEP_STARTED')
+        .map((event) => JSON.parse(event.content));
+      const finished = client.events
+        .filter((event) => event.event_type === 'STEP_FINISHED')
+        .map((event) => JSON.parse(event.content));
+      expect(finished.map((step) => step.stepId)).toEqual(started.map((step) => step.stepId));
+      expect(JSON.stringify(client.events)).not.toMatch(/Bash|private command/);
+      if (scenario.finishedStatus) {
+        const finishedRun = client.events.find((event) => event.event_type === 'RUN_FINISHED');
+        expect(JSON.parse(finishedRun?.content ?? '{}').status).toBe(scenario.finishedStatus);
+        expect(client.completed).toEqual([scenario.completedReason]);
+      } else {
+        expect(client.events.some((event) => event.event_type === 'RUN_FINISHED')).toBe(false);
+        expect(client.events.some((event) => event.event_type === 'RUN_ERROR')).toBe(false);
+        expect(client.completed).toEqual([scenario.completedReason]);
+      }
+    }
+  });
+
   it('applies tool visibility changes to the next CoT tool event', async () => {
     const client = new FakeCotClient();
     const publisher = new CotPublisher({
