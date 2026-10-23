@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>飞书 Coding Agent 卡片 UI 升级原型 (Issue #8)</title>
+  <style>
+    :root {
+      --feishu-bg: #F5F6F7;
+      --feishu-card-bg: #FFFFFF;
+      --feishu-text-main: #1F2329;
+      --feishu-text-sub: #646A73;
+      --feishu-text-muted: #8F959E;
+      --feishu-border: #DEE0E3;
+      --feishu-border-light: #EFF0F1;
+      --feishu-blue: #3370FF;
+      --feishu-blue-hover: #2B5FD9;
+      --feishu-blue-bg: #EBF1FF;
+      --feishu-green: #34C724;
+      --feishu-green-bg: #EAF8E9;
+      --feishu-orange: #FF8800;
+      --feishu-orange-bg: #FFF4E6;
+      --feishu-red: #F54A45;
+      --feishu-red-bg: #FEECEC;
+      --feishu-grey: #8F959E;
+      --feishu-grey-bg: #F2F3F5;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: #EAEDF1;
+      color: var(--feishu-text-main);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    .proto-banner {
+      width: 100%;
+      max-width: 960px;
+      background: #FFFFFF;
+      border-radius: 12px;
+      padding: 18px 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      border-left: 4px solid var(--feishu-blue);
+    }
+    .proto-banner h1 {
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .proto-banner p {
+      font-size: 13px;
+      color: var(--feishu-text-sub);
+      line-height: 1.5;
+    }
+    .proto-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 11px;
+      border-radius: 4px;
+      background: var(--feishu-blue-bg);
+      color: var(--feishu-blue);
+      font-weight: 600;
+    }
+
+    .proto-layout {
+      width: 100%;
+      max-width: 960px;
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 20px;
+    }
+
+    /* Controls Panel */
+    .controls-panel {
+      background: #FFFFFF;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      height: fit-content;
+    }
+    .controls-panel h2 {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--feishu-text-main);
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .scenario-btn {
+      width: 100%;
+      text-align: left;
+      padding: 10px 12px;
+      background: var(--feishu-bg);
+      border: 1px solid transparent;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.15s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .scenario-btn:hover {
+      background: #E8ECEF;
+    }
+    .scenario-btn.active {
+      background: var(--feishu-blue-bg);
+      border-color: var(--feishu-blue);
+      color: var(--feishu-blue);
+    }
+    .scenario-btn .desc {
+      font-size: 11px;
+      color: var(--feishu-text-muted);
+      font-weight: normal;
+    }
+    .scenario-btn.active .desc {
+      color: #6188E8;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--feishu-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 16px 0 10px;
+    }
+
+    .form-group {
+      margin-bottom: 12px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--feishu-text-sub);
+      margin-bottom: 4px;
+    }
+    .form-group select, .form-group input {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid var(--feishu-border);
+      border-radius: 6px;
+      font-size: 13px;
+      background: #FFFFFF;
+      outline: none;
+    }
+    .form-group select:focus, .form-group input:focus {
+      border-color: var(--feishu-blue);
+    }
+
+    /* Lark Chat Viewport */
+    .chat-viewport {
+      background: #F0F2F5;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      position: relative;
+    }
+
+    .chat-msg-row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .chat-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 18px;
+      background: #3370FF;
+      color: #FFF;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .chat-content-wrap {
+      flex: 1;
+      max-width: 540px;
+    }
+    .chat-sender-name {
+      font-size: 12px;
+      color: var(--feishu-text-muted);
+      margin-bottom: 6px;
+    }
+
+    /* Feishu Card Spec 2.0 */
+    .lark-card {
+      background: var(--feishu-card-bg);
+      border: 1px solid var(--feishu-border);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 6px rgba(31,35,41,0.04);
+      transition: all 0.2s ease;
+    }
+
+    /* Card Headers */
+    .lark-card-header {
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--feishu-border-light);
+    }
+    .lark-card-header.wathet {
+      background: linear-gradient(135deg, #EBF1FF 0%, #F5F8FF 100%);
+      border-bottom-color: #D6E4FF;
+    }
+    .lark-card-header.green {
+      background: linear-gradient(135deg, #EAF8E9 0%, #F4FBF4 100%);
+      border-bottom-color: #C8ECC6;
+    }
+    .lark-card-header.orange {
+      background: linear-gradient(135deg, #FFF4E6 0%, #FFF9F2 100%);
+      border-bottom-color: #FFE0BA;
+    }
+    .lark-card-header.red {
+      background: linear-gradient(135deg, #FEECEC 0%, #FFF5F5 100%);
+      border-bottom-color: #FFCCC7;
+    }
+    .lark-card-header.grey {
+      background: #F2F3F5;
+      border-bottom-color: #E4E6EB;
+    }
+
+    .header-text-block {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .header-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--feishu-text-main);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .header-subtitle {
+      font-size: 12px;
+      color: var(--feishu-text-sub);
+    }
+
+    .header-tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 10px;
+      white-space: nowrap;
+    }
+    .header-tag.blue { background: #D0E1FD; color: #1C55D9; }
+    .header-tag.green { background: #C8ECC6; color: #177813; }
+    .header-tag.orange { background: #FFE0BA; color: #B35C00; }
+    .header-tag.red { background: #FFCCC7; color: #C41D17; }
+    .header-tag.grey { background: #E1E3E6; color: #5B626C; }
+
+    /* Card Body */
+    .lark-card-body {
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* Collapsible Panel */
+    .lark-panel {
+      border: 1px solid var(--feishu-border);
+      border-radius: 6px;
+      background: #FAFAFA;
+      overflow: hidden;
+      font-size: 13px;
+    }
+    .lark-panel.panel-blue {
+      border-color: #BDD4FD;
+      background: #F7FAFF;
+    }
+    .lark-panel.panel-red {
+      border-color: #FCA5A5;
+      background: #FFF8F8;
+    }
+    .lark-panel-header {
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+      background: rgba(0,0,0,0.015);
+      font-weight: 600;
+    }
+    .lark-panel-header:hover {
+      background: rgba(0,0,0,0.035);
+    }
+    .panel-arrow {
+      font-size: 11px;
+      color: var(--feishu-text-muted);
+      transition: transform 0.2s ease;
+    }
+    .panel-arrow.expanded {
+      transform: rotate(180deg);
+    }
+    .lark-panel-content {
+      padding: 10px 12px;
+      border-top: 1px dashed var(--feishu-border);
+      font-size: 12px;
+      color: var(--feishu-text-sub);
+      line-height: 1.5;
+    }
+
+    /* Markdown text */
+    .card-markdown-text {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--feishu-text-main);
+    }
+
+    /* Modified files list */
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: #1F2329;
+      padding: 2px 0;
+    }
+    .file-item-badge {
+      font-size: 10px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-weight: 600;
+    }
+    .badge-mod { background: #E1EAFA; color: #295ECC; }
+    .badge-add { background: #EAF8E9; color: #177813; }
+
+    /* Code block */
+    .code-box {
+      background: #24292E;
+      color: #E1E4E8;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      overflow-x: auto;
+      margin-top: 6px;
+    }
+    .code-box.error {
+      background: #2D1B1B;
+      border-left: 3px solid var(--feishu-red);
+      color: #FFB3B3;
+    }
+
+    /* Actions / Buttons */
+    .card-actions-row {
+      display: flex;
+      gap: 8px;
+      padding-top: 6px;
+      border-top: 1px solid var(--feishu-border-light);
+    }
+    .lark-btn {
+      padding: 6px 14px;
+      font-size: 13px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+      border: 1px solid transparent;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .lark-btn-primary {
+      background: var(--feishu-blue);
+      color: #FFFFFF;
+    }
+    .lark-btn-primary:hover {
+      background: var(--feishu-blue-hover);
+    }
+    .lark-btn-default {
+      background: #FFFFFF;
+      border-color: var(--feishu-border);
+      color: var(--feishu-text-main);
+    }
+    .lark-btn-default:hover {
+      background: var(--feishu-bg);
+    }
+    .lark-btn-danger {
+      background: #FFFFFF;
+      border-color: #FCA5A5;
+      color: var(--feishu-red);
+    }
+    .lark-btn-danger:hover {
+      background: #FEECEC;
+    }
+
+    .card-footer-tip {
+      font-size: 11px;
+      color: var(--feishu-text-muted);
+      font-style: italic;
+      margin-top: 2px;
+    }
+
+    /* Toast Notification */
+    .feishu-toast {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-20px);
+      background: rgba(31,35,41,0.92);
+      color: #FFFFFF;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.25s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+      z-index: 100;
+    }
+    .feishu-toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .json-toggle-bar {
+      margin-top: 14px;
+      display: flex;
+      justify-content: flex-end;
+    }
+    .json-toggle-btn {
+      font-size: 12px;
+      color: var(--feishu-blue);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    .json-view-box {
+      margin-top: 10px;
+      background: #1E1E1E;
+      color: #9CDCFE;
+      padding: 12px;
+      border-radius: 8px;
+      font-family: ui-monospace, Menlo, monospace;
+      font-size: 11px;
+      max-height: 240px;
+      overflow-y: auto;
+      display: none;
+    }
+    .json-view-box.show {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="proto-banner">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+      <h1>🤖 飞书 Coding Agent 卡片 UI 升级原型</h1>
+      <span class="proto-tag">Issue #8 原型验证</span>
+    </div>
+    <p>
+      通过左侧场景选择器或右侧卡片按钮，亲身体验 <strong>Tier 1 动态 Header</strong>、<strong>Tier 2 写入文件看板与失败展开</strong>、以及 <strong>Tier 3 终态快捷操作与 Toast 回调</strong>。
+    </p>
+  </div>
+
+  <div class="proto-layout">
+    <!-- Left Controls Panel -->
+    <div class="controls-panel">
+      <h2>典型场景走查 (Scenarios)</h2>
+
+      <button class="scenario-btn active" onclick="loadScenario('happy')">
+        <span>✅ 1. 正常执行完成 (Happy Path)</span>
+        <span class="desc">绿色 Header + 耗时指标 + 写入文件清单 + 快捷按钮</span>
+      </button>
+
+      <button class="scenario-btn" onclick="loadScenario('partial_fail')">
+        <span>⚠️ 2. 部分工具失败 (Partial Failure)</span>
+        <span class="desc">橙色 Header 警示 + 单测报错强制首个展开 + 绝不粉饰</span>
+      </button>
+
+      <button class="scenario-btn" onclick="loadScenario('streaming')">
+        <span>⏳ 3. 实时运行中 (Streaming Live)</span>
+        <span class="desc">浅蓝 Header 思考态 + 运行中 Tag + ⏹ 终止按钮</span>
+      </button>
+
+      <button class="scenario-btn" onclick="loadScenario('codex')">
+        <span>🤖 4. Codex / 无文件模式</span>
+        <span class="desc">Codex 品牌标识 + 写入文件面板自适应隐藏</span>
+      </button>
+
+      <button class="scenario-btn" onclick="loadScenario('interrupted')">
+        <span>⏹ 5. 用户手动中断 (Interrupted)</span>
+        <span class="desc">中性灰 Header + 已停止 Tag + 状态归拢</span>
+      </button>
+
+      <div class="section-title">自由微调 (Free Play)</div>
+
+      <div class="form-group">
+        <label>Agent 品牌</label>
+        <select id="cfgAgent" onchange="applyCustom()">
+          <option value="claude">Claude Code (Claude 3.7 Sonnet)</option>
+          <option value="codex">Codex CLI (o3-mini)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>工作空间名称</label>
+        <input type="text" id="cfgWorkspace" value="lark-coding-agent-bridge" oninput="applyCustom()">
+      </div>
+
+      <div class="form-group">
+        <label>模拟执行耗时</label>
+        <select id="cfgDuration" onchange="applyCustom()">
+          <option value="4.2s">4.2s (极速)</option>
+          <option value="12.8s" selected>12.8s (标准)</option>
+          <option value="38.5s">38.5s (复杂排障)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Right Chat Viewport -->
+    <div class="chat-viewport">
+      <!-- Simulated Lark Toast -->
+      <div id="toast" class="feishu-toast">
+        <span id="toastIcon">✅</span>
+        <span id="toastText">已发送指令</span>
+      </div>
+
+      <div class="chat-msg-row">
+        <div class="chat-avatar">🤖</div>
+        <div class="chat-content-wrap">
+          <div class="chat-sender-name">PersonalAgent · 刚刚</div>
+
+          <!-- The Lark Card Component -->
+          <div class="lark-card" id="cardContainer">
+            <!-- Header -->
+            <div id="cardHeader" class="lark-card-header green">
+              <div class="header-text-block">
+                <div class="header-title" id="headerTitle">🤖 Claude Code</div>
+                <div class="header-subtitle" id="headerSubtitle">📁 lark-coding-agent-bridge · ⏱ 12.8s · 🛠 3 个工具</div>
+              </div>
+              <div class="header-tag green" id="headerTag">已完成</div>
+            </div>
+
+            <!-- Body -->
+            <div class="lark-card-body">
+              <!-- Thinking Panel -->
+              <div class="lark-panel" id="panelThinking">
+                <div class="lark-panel-header" onclick="togglePanel('thinkingBody', 'arrowThinking')">
+                  <span>🧠 思考过程 (Thinking)</span>
+                  <span class="panel-arrow" id="arrowThinking">▼</span>
+                </div>
+                <div class="lark-panel-content" id="thinkingBody" style="display: none;">
+                  1. 分析用户对于卡片 UI 升级的诉求。<br>
+                  2. 检查 run-renderer.ts 与 channel.ts 中状态传递。<br>
+                  3. 增加动态 Header 与快捷操作按钮。
+                </div>
+              </div>
+
+              <!-- Tool Calls -->
+              <div id="toolsArea"></div>
+
+              <!-- Answer Markdown -->
+              <div class="card-markdown-text" id="answerMarkdown">
+                已成功实施卡片 Header 状态感知改造与快捷动作分发逻辑。代码逻辑已就绪，所有核心测试均保持绿色。
+              </div>
+
+              <!-- Written Files Panel (Tier 2) -->
+              <div class="lark-panel panel-blue" id="panelWrittenFiles">
+                <div class="lark-panel-header" onclick="togglePanel('filesBody', 'arrowFiles')">
+                  <span>📝 写入文件清单 (2 个文件)</span>
+                  <span class="panel-arrow expanded" id="arrowFiles">▼</span>
+                </div>
+                <div class="lark-panel-content" id="filesBody">
+                  <div class="file-item">
+                    <span class="file-item-badge badge-mod">MOD</span>
+                    <span>src/card/run-renderer.ts</span>
+                  </div>
+                  <div class="file-item">
+                    <span class="file-item-badge badge-mod">MOD</span>
+                    <span>src/card/dispatcher.ts</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Bottom Actions (Tier 3) -->
+              <div class="card-actions-row" id="actionsRow">
+                <button class="lark-btn lark-btn-primary" onclick="triggerAction('test', '运行当前项目的单元测试并报告结果')">
+                  🧪 运行单测
+                </button>
+                <button class="lark-btn lark-btn-default" onclick="triggerAction('diff', '查看 git diff 变更并总结改动要点')">
+                  🔍 查看 Diff
+                </button>
+                <button class="lark-btn lark-btn-default" onclick="triggerAction('new', '清空当前会话并重新开始')">
+                  🆕 新会话
+                </button>
+              </div>
+
+              <div class="card-footer-tip" id="footerTip">
+                💡 快捷按钮将在当前会话中执行
+              </div>
+            </div>
+          </div>
+
+          <!-- JSON Schema 2.0 Viewer -->
+          <div class="json-toggle-bar">
+            <button class="json-toggle-btn" onclick="toggleJsonView()">查看底层 Card Schema 2.0 JSON</button>
+          </div>
+          <pre class="json-view-box" id="jsonViewBox"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentScenario = 'happy';
+
+    const scenarios = {
+      happy: {
+        agentKind: 'claude',
+        headerClass: 'green',
+        title: '🤖 Claude Code',
+        subtitle: '📁 lark-coding-agent-bridge · ⏱ 12.8s · 🛠 3 个工具 · 📝 2 文件修改',
+        tagText: '已完成',
+        tagClass: 'green',
+        tools: [
+          { type: 'summary', text: '☕ 2 个只读工具已收拢 (Read, Grep)' },
+          { type: 'normal', name: 'Edit', summary: 'src/card/run-renderer.ts', status: 'done' }
+        ],
+        markdown: '已成功为卡片渲染器接入 CardKit 2.0 原生 Header 与终态快捷动作条。所有单测与脱敏规则均验证通过。',
+        showFiles: true,
+        files: ['src/card/run-renderer.ts', 'src/card/dispatcher.ts'],
+        runningStop: false
+      },
+      partial_fail: {
+        agentKind: 'claude',
+        headerClass: 'orange',
+        title: '🤖 Claude Code',
+        subtitle: '📁 lark-coding-agent-bridge · ⚠️ 执行完成 (但有 1 个工具失败)',
+        tagText: '部分失败',
+        tagClass: 'orange',
+        tools: [
+          { type: 'summary', text: '☕ 2 个工具调用 (Read: ok)' },
+          {
+            type: 'error',
+            name: 'Bash',
+            summary: 'pnpm test:unit',
+            output: 'FAIL tests/unit/card/run-renderer.snapshot.test.ts\n  ✕ snapshot mismatch: header.template expected wathet but received green',
+            status: 'error'
+          }
+        ],
+        markdown: '核心逻辑已写完，但执行单测时检测到快照不匹配错误。请先检查报错信息或点击下方按钮重跑验证。',
+        showFiles: true,
+        files: ['src/card/run-renderer.ts'],
+        runningStop: false
+      },
+      streaming: {
+        agentKind: 'claude',
+        headerClass: 'wathet',
+        title: '🤖 Claude Code',
+        subtitle: '📁 lark-coding-agent-bridge · 🧰 正在调用工具: Bash',
+        tagText: '运行中 ⏳',
+        tagClass: 'blue',
+        tools: [
+          { type: 'normal', name: 'Bash', summary: 'git status --porcelain', status: 'running' }
+        ],
+        markdown: '正在扫描本地 Git 工作区与修改记录…',
+        showFiles: false,
+        runningStop: true
+      },
+      codex: {
+        agentKind: 'codex',
+        headerClass: 'green',
+        title: '🤖 Codex',
+        subtitle: '📁 lark-coding-agent-bridge · ⏱ 8.4s · 🛠 1 次命令',
+        tagText: '已完成',
+        tagClass: 'green',
+        tools: [
+          { type: 'normal', name: 'command_execution', summary: 'python3 -m unittest', status: 'done' }
+        ],
+        markdown: 'Codex CLI 已执行完毕。由于 Codex 采用纯命令工作流，写入文件面板已自适应隐藏，保持界面清爽。',
+        showFiles: false,
+        runningStop: false
+      },
+      interrupted: {
+        agentKind: 'claude',
+        headerClass: 'grey',
+        title: '🤖 Claude Code',
+        subtitle: '📁 lark-coding-agent-bridge · 用户已手动终止本次运行',
+        tagText: '已停止',
+        tagClass: 'grey',
+        tools: [
+          { type: 'summary', text: '☕ 1 个工具已中断' }
+        ],
+        markdown: '_⏹ 用户点击了终止按钮，当前任务已安全中断。_',
+        showFiles: false,
+        runningStop: false
+      }
+    };
+
+    function loadScenario(name) {
+      currentScenario = name;
+      document.querySelectorAll('.scenario-btn').forEach(btn => btn.classList.remove('active'));
+      event.currentTarget.classList.add('active');
+
+      const s = scenarios[name];
+      document.getElementById('cfgAgent').value = s.agentKind;
+      renderCard(s);
+    }
+
+    function applyCustom() {
+      const s = scenarios[currentScenario];
+      s.agentKind = document.getElementById('cfgAgent').value;
+      const ws = document.getElementById('cfgWorkspace').value || 'repo';
+      const dur = document.getElementById('cfgDuration').value;
+
+      s.title = s.agentKind === 'codex' ? '🤖 Codex' : '🤖 Claude Code';
+      if (s.headerClass === 'green') {
+        s.subtitle = `📁 ${ws} · ⏱ ${dur} · 🛠 3 个工具`;
+      }
+      renderCard(s);
+    }
+
+    function renderCard(s) {
+      // Header
+      const header = document.getElementById('cardHeader');
+      header.className = `lark-card-header ${s.headerClass}`;
+      document.getElementById('headerTitle').textContent = s.title;
+      document.getElementById('headerSubtitle').textContent = s.subtitle;
+
+      const tag = document.getElementById('headerTag');
+      tag.className = `header-tag ${s.tagClass}`;
+      tag.textContent = s.tagText;
+
+      // Tools area
+      const toolsArea = document.getElementById('toolsArea');
+      toolsArea.innerHTML = '';
+      if (s.tools) {
+        s.tools.forEach(t => {
+          if (t.type === 'summary') {
+            const div = document.createElement('div');
+            div.className = 'lark-panel';
+            div.innerHTML = `<div class="lark-panel-header" style="color:#646A73;font-size:12px;"><span>${t.text}</span></div>`;
+            toolsArea.appendChild(div);
+          } else if (t.type === 'error') {
+            const div = document.createElement('div');
+            div.className = 'lark-panel panel-red';
+            div.innerHTML = `
+              <div class="lark-panel-header" style="color:#C41D17;">
+                <span>❌ <strong>${t.name}</strong> — ${t.summary} (强制展开)</span>
+                <span class="panel-arrow expanded">▼</span>
+              </div>
+              <div class="lark-panel-content">
+                <div class="code-box error">${escapeHtml(t.output)}</div>
+              </div>
+            `;
+            toolsArea.appendChild(div);
+          } else {
+            const div = document.createElement('div');
+            div.className = 'lark-panel';
+            const icon = t.status === 'running' ? '⏳' : '✅';
+            div.innerHTML = `
+              <div class="lark-panel-header">
+                <span>${icon} <strong>${t.name}</strong> — ${t.summary}</span>
+              </div>
+            `;
+            toolsArea.appendChild(div);
+          }
+        });
+      }
+
+      // Markdown
+      document.getElementById('answerMarkdown').textContent = s.markdown;
+
+      // Written Files Panel
+      const filesPanel = document.getElementById('panelWrittenFiles');
+      if (s.showFiles && s.files && s.files.length > 0) {
+        filesPanel.style.display = 'block';
+        const body = document.getElementById('filesBody');
+        body.innerHTML = s.files.map(f => `
+          <div class="file-item">
+            <span class="file-item-badge badge-mod">MOD</span>
+            <span>${escapeHtml(f)}</span>
+          </div>
+        `).join('');
+      } else {
+        filesPanel.style.display = 'none';
+      }
+
+      // Actions Row
+      const actionsRow = document.getElementById('actionsRow');
+      const footerTip = document.getElementById('footerTip');
+      if (s.runningStop) {
+        actionsRow.innerHTML = `
+          <button class="lark-btn lark-btn-danger" onclick="triggerAction('stop', '用户已终止本次运行')">
+            ⏹ 终止
+          </button>
+        `;
+        footerTip.style.display = 'none';
+      } else {
+        actionsRow.innerHTML = `
+          <button class="lark-btn lark-btn-primary" onclick="triggerAction('test', '运行当前项目的单元测试并报告结果')">
+            🧪 运行单测
+          </button>
+          <button class="lark-btn lark-btn-default" onclick="triggerAction('diff', '查看 git diff 变更并总结改动要点')">
+            🔍 查看 Diff
+          </button>
+          <button class="lark-btn lark-btn-default" onclick="triggerAction('new', '已开始新会话')">
+            🆕 新会话
+          </button>
+        `;
+        footerTip.style.display = 'block';
+      }
+
+      updateJsonView(s);
+    }
+
+    function togglePanel(bodyId, arrowId) {
+      const body = document.getElementById(bodyId);
+      const arrow = document.getElementById(arrowId);
+      const isHidden = body.style.display === 'none';
+      body.style.display = isHidden ? 'block' : 'none';
+      arrow.classList.toggle('expanded', isHidden);
+    }
+
+    function triggerAction(actionKey, promptText) {
+      const toast = document.getElementById('toast');
+      const toastText = document.getElementById('toastText');
+      const toastIcon = document.getElementById('toastIcon');
+
+      if (actionKey === 'new') {
+        toastIcon.textContent = '🆕';
+        toastText.textContent = '已重置会话 (handleNew)';
+      } else if (actionKey === 'stop') {
+        toastIcon.textContent = '⏹';
+        toastText.textContent = '已中断运行';
+        loadScenario('interrupted');
+      } else {
+        toastIcon.textContent = '⚡';
+        toastText.textContent = `已发送: ${promptText.slice(0, 15)}…`;
+      }
+
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2500);
+    }
+
+    function toggleJsonView() {
+      const box = document.getElementById('jsonViewBox');
+      box.classList.toggle('show');
+    }
+
+    function updateJsonView(s) {
+      const cardJson = {
+        schema: "2.0",
+        header: {
+          template: s.headerClass,
+          title: { tag: "plain_text", content: s.title },
+          subtitle: { tag: "plain_text", content: s.subtitle },
+          text_tag_list: [
+            { tag: "text_tag", text: { tag: "plain_text", content: s.tagText }, color: s.tagClass }
+          ]
+        },
+        body: {
+          elements: [
+            { tag: "markdown", content: s.markdown },
+            s.showFiles ? { tag: "collapsible_panel", header: { title: "📝 写入文件清单" }, elements: ["..."] } : null,
+            {
+              tag: "action",
+              actions: s.runningStop ? [
+                { tag: "button", type: "danger", text: "⏹ 终止", value: { cmd: "stop" } }
+              ] : [
+                { tag: "button", type: "primary", text: "🧪 运行单测", value: { cmd: "prompt.test" } },
+                { tag: "button", type: "default", text: "🔍 查看 Diff", value: { cmd: "prompt.diff" } },
+                { tag: "button", type: "default", text: "🆕 新会话", value: { cmd: "new" } }
+              ]
+            }
+          ].filter(Boolean)
+        }
+      };
+      document.getElementById('jsonViewBox').textContent = JSON.stringify(cardJson, null, 2);
+    }
+
+    function escapeHtml(str) {
+      return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Initial render
+    renderCard(scenarios.happy);
+  </script>
+</body>
+</html>
