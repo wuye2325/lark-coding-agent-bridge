@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { consumeCotEvents, CotClient, CotPublisher, cotBriefToolTitle, finalAnswerOnlyState } from '../../../src/bot/cot.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 import type { RunState } from '../../../src/card/run-state.js';
+import { translateEvent } from '../../../src/agent/claude/stream-json.js';
 
 describe('COT event mapping', () => {
   it('publishes assistant progress text and brief tool summaries', async () => {
@@ -128,6 +129,92 @@ describe('COT event mapping', () => {
     expect(client.events.find((event) => event.event_type === 'RUN_FINISHED')?.content)
       .toContain('"status":"done"');
     expect(client.completed).toEqual(['done']);
+  });
+
+  it('keeps preceding process text but omits Claude assistant text repeated as final_text', async () => {
+    const finalAnswers = [
+      'CLAUDE_FINAL_RESULT_SHOULD_STAY_OUT_OF_COT',
+      `CLAUDE_LONG_FINAL_RESULT_SHOULD_STAY_OUT_OF_COT ${'长答复内容'.repeat(500)}`,
+    ];
+
+    for (const finalAnswer of finalAnswers) {
+      const client = new FakeCotClient();
+      const publisher = new CotPublisher({
+        client,
+        chatId: 'oc_chat',
+        originMessageId: 'om_origin',
+        runId: 'run-claude-final-text-dedup',
+        scope: 'oc_chat',
+        inputPreview: 'run',
+      });
+      await publisher.start();
+      const rawEvents = [
+        { type: 'assistant', message: { content: [{ type: 'text', text: '先前的真实过程进度。' }] } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: finalAnswer }] } },
+        { type: 'result', subtype: 'success', result: finalAnswer },
+      ];
+      const events = (async function* (): AsyncIterable<AgentEvent> {
+        for (const raw of rawEvents) yield* translateEvent(raw);
+      })();
+
+      await consumeCotEvents(events, publisher, { detail: 'brief' });
+
+      const publishedText = client.events
+        .filter((event) => event.event_type === 'TEXT_MESSAGE_CONTENT')
+        .map((event) => JSON.parse(event.content).delta)
+        .join('');
+      const started = client.events
+        .filter((event) => event.event_type === 'STEP_STARTED')
+        .map((event) => JSON.parse(event.content));
+      const finished = client.events
+        .filter((event) => event.event_type === 'STEP_FINISHED')
+        .map((event) => JSON.parse(event.content));
+
+      expect(publishedText).toContain('先前的真实过程进度。');
+      expect(publishedText).not.toContain(finalAnswer.slice(0, 20));
+      expect(finished.map((step) => step.stepId)).toEqual(started.map((step) => step.stepId));
+      expect(client.completed).toEqual(['done']);
+    }
+  });
+
+  it('flushes and closes buffered process text when the Claude event stream throws', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-claude-stream-error',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+    });
+    await publisher.start();
+    const events = (async function* (): AsyncIterable<AgentEvent> {
+      yield* translateEvent({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '在终态前已经产生的过程文本。' }] },
+      });
+      throw new Error('stream stopped');
+    })();
+
+    await consumeCotEvents(events, publisher, { detail: 'brief' });
+
+    const eventTypes = client.events.map((event) => event.event_type);
+    const started = client.events
+      .filter((event) => event.event_type === 'STEP_STARTED')
+      .map((event) => JSON.parse(event.content));
+    const finished = client.events
+      .filter((event) => event.event_type === 'STEP_FINISHED')
+      .map((event) => JSON.parse(event.content));
+    const text = client.events
+      .filter((event) => event.event_type === 'TEXT_MESSAGE_CONTENT')
+      .map((event) => JSON.parse(event.content).delta)
+      .join('');
+
+    expect(text).toBe('在终态前已经产生的过程文本。');
+    expect(eventTypes).toContain('TEXT_MESSAGE_START');
+    expect(eventTypes).toContain('TEXT_MESSAGE_END');
+    expect(finished.map((step) => step.stepId)).toEqual(started.map((step) => step.stepId));
+    expect(client.completed).toEqual(['error']);
   });
 
   it('preserves the Agent error message and terminal reason while tools are hidden', async () => {
