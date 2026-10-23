@@ -314,19 +314,22 @@ export async function consumeCotEvents(
   opts: { detail: CotMessagesMode; showTools?: () => boolean },
 ): Promise<void> {
   let reasoningOpen = false;
-  let textStepOpen = false;
   let textMessageOpen = false;
   let textMessageIndex = 0;
   let textMessageId: string | undefined;
   const toolBrief = new Map<string, { name: string; input: unknown }>();
   const reasoningMessageId = `reasoning-${publisher.runId}`;
-  const finalStepId = `step-process-${publisher.runId}`;
+  const understandStep = { stepId: `step-understand-${publisher.runId}`, stepName: '理解用户问题' };
+  const processStep = { stepId: `step-process-${publisher.runId}`, stepName: '处理任务' };
+  const resultsStep = { stepId: `step-results-${publisher.runId}`, stepName: '整理结果' };
+  let activeStep: typeof understandStep | undefined = understandStep;
 
   try {
     for await (const evt of events) {
       if (evt.type === 'system' || evt.type === 'usage') continue;
       if (evt.type === 'thinking') {
         closeTextIfNeeded();
+        moveToStep(processStep);
         if (!reasoningOpen) {
           reasoningOpen = true;
           publisher.enqueue('REASONING_START', { messageId: reasoningMessageId });
@@ -342,9 +345,10 @@ export async function consumeCotEvents(
         continue;
       }
       if (evt.type === 'tool_use') {
-        if (!showTools()) continue;
         closeReasoningIfNeeded();
         closeTextIfNeeded();
+        moveToStep(processStep);
+        if (!showTools()) continue;
         const toolCallId = evt.id;
         const detailed = opts.detail === 'detailed';
         const showSummary = opts.detail === 'brief' || detailed;
@@ -366,6 +370,9 @@ export async function consumeCotEvents(
         continue;
       }
       if (evt.type === 'tool_result') {
+        closeReasoningIfNeeded();
+        closeTextIfNeeded();
+        moveToStep(processStep);
         if (!showTools()) {
           toolBrief.delete(evt.id);
           continue;
@@ -388,13 +395,7 @@ export async function consumeCotEvents(
       }
       if (evt.type === 'text') {
         closeReasoningIfNeeded();
-        if (!textStepOpen) {
-          textStepOpen = true;
-          publisher.enqueue('STEP_STARTED', {
-            stepId: finalStepId,
-            stepName: '输出过程',
-          });
-        }
+        moveToStep(processStep);
         if (!textMessageOpen) {
           textMessageOpen = true;
           textMessageId = `text-${publisher.runId}-${++textMessageIndex}`;
@@ -406,16 +407,16 @@ export async function consumeCotEvents(
         });
         continue;
       }
-      if (evt.type === 'final_text') continue;
+      if (evt.type === 'final_text') {
+        closeReasoningIfNeeded();
+        closeTextIfNeeded();
+        moveToStep(resultsStep);
+        continue;
+      }
       if (evt.type === 'done' || evt.type === 'error') {
         closeReasoningIfNeeded();
         closeTextIfNeeded();
-        if (textStepOpen) {
-          publisher.enqueue('STEP_FINISHED', {
-            stepId: finalStepId,
-            stepName: '输出过程',
-          });
-        }
+        finishStep();
         if (evt.type === 'error') {
           publisher.enqueue('RUN_ERROR', { message: evt.message, code: evt.terminationReason ?? 'error' });
           await publisher.finish('error');
@@ -433,10 +434,27 @@ export async function consumeCotEvents(
     }
     closeReasoningIfNeeded();
     closeTextIfNeeded();
+    finishStep();
     await publisher.finish('done');
   } catch (err) {
     log.warn('cot', 'consume-failed', { err: err instanceof Error ? err.message : String(err) });
+    closeReasoningIfNeeded();
+    closeTextIfNeeded();
+    finishStep();
     await publisher.finish('error');
+  }
+
+  function moveToStep(step: typeof understandStep): void {
+    if (activeStep?.stepId === step.stepId) return;
+    finishStep();
+    activeStep = step;
+    publisher.enqueue('STEP_STARTED', step);
+  }
+
+  function finishStep(): void {
+    if (!activeStep) return;
+    publisher.enqueue('STEP_FINISHED', activeStep);
+    activeStep = undefined;
   }
 
   function closeReasoningIfNeeded(): void {
