@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>飞书 Coding Agent 卡片 UI 升级原型 (Issue #8)</title>
+  <title>飞书对话展示原型 · CoT 与结果卡片 · Issue #8</title>
   <style>
     :root {
       --feishu-bg: #F5F6F7;
@@ -468,445 +468,498 @@
     .json-view-box.show {
       display: block;
     }
+
+    /* 保留原视觉风格，补齐双消息布局与配置走查。 */
+    [hidden] { display: none !important; }
+    button, select, input, summary { font: inherit; }
+    button:focus-visible, summary:focus-visible { outline: 2px solid var(--feishu-blue); outline-offset: 3px; }
+    .proto-banner, .proto-layout { max-width: 1160px; }
+    .proto-layout { grid-template-columns: 300px minmax(0, 1fr); align-items: start; }
+    .controls-panel { position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow: auto; }
+    .controls-panel h2 { margin-top: 8px; }
+    .chat-viewport { min-width: 0; }
+    .chat-content-wrap { min-width: 0; max-width: none; }
+    .header-text-block { min-width: 0; }
+    .header-subtitle, .file-item, .card-markdown-text { overflow-wrap: anywhere; }
+    .lark-card-header { gap: 12px; flex-wrap: wrap; }
+    .card-actions-row { flex-wrap: wrap; }
+    .file-item { align-items: flex-start; }
+    .file-item-badge { flex-shrink: 0; }
+    .card-markdown-text { white-space: pre-wrap; }
+    .scenario-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .scenario-grid .scenario-btn { margin: 0; font-size: 12px; padding: 9px; }
+    .helper-text { font-size: 12px; color: var(--feishu-text-sub); line-height: 1.65; margin: 8px 0; }
+    .config-summary { display: flex; gap: 6px; flex-wrap: wrap; }
+    .config-pill { font-size: 11px; color: #2856A0; background: var(--feishu-blue-bg); padding: 4px 8px; border-radius: 5px; }
+    .conversation-caption { font-size: 12px; color: var(--feishu-text-sub); line-height: 1.6; }
+    .user-query { background: #DCE7FF; border-radius: 9px; padding: 10px 14px; font-size: 13px; }
+    .cot-bubble { background: #FFF; border: 1px solid var(--feishu-border); border-radius: 10px; padding: 14px 16px; }
+    .cot-heading { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; font-weight: 600; }
+    .cot-stage { padding: 11px 0 0 21px; margin-left: 6px; border-left: 1px solid var(--feishu-border); position: relative; font-size: 12px; }
+    .cot-stage::before { content: ''; position: absolute; top: 15px; left: -4px; width: 7px; height: 7px; background: #A8ABB2; border-radius: 50%; }
+    .cot-stage.complete::before { background: #34A853; }
+    .cot-stage.active::before { background: var(--feishu-blue); }
+    .cot-stage.warning::before { background: var(--feishu-orange); }
+    .cot-stage-title { font-weight: 600; }
+    .cot-stage p { color: var(--feishu-text-sub); line-height: 1.65; padding-top: 4px; }
+    .tool-summary { padding: 8px 0; border-bottom: 1px solid var(--feishu-border-light); font-size: 12px; overflow-wrap: anywhere; }
+    .tool-summary:last-child { border-bottom: 0; }
+    .tool-summary pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--feishu-bg); padding: 8px; border-radius: 5px; margin-top: 6px; }
+    .result-stats { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--feishu-text-sub); font-size: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--feishu-border-light); }
+    .notice { font-size: 12px; padding: 9px 11px; line-height: 1.65; background: var(--feishu-orange-bg); color: #965200; border-radius: 6px; }
+    .error-detail summary { cursor: pointer; font-weight: 600; }
+    .plain-reply { background: #FFF; border-radius: 8px; padding: 14px 16px; white-space: pre-wrap; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+    .context-panel { background: #FFF; border: 1px dashed #BAC3D1; border-radius: 8px; padding: 12px; }
+    .context-panel h3 { font-size: 13px; margin-bottom: 8px; }
+    .context-values { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12px; }
+    .context-values dt { color: var(--feishu-text-sub); }
+    .context-values dd { overflow-wrap: anywhere; }
+    .context-buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .context-buttons button { border: 1px solid var(--feishu-border); background: #FFF; border-radius: 5px; padding: 5px 8px; font-size: 11px; cursor: pointer; }
+    .pending-list { font-size: 12px; margin: 8px 0 0 18px; color: var(--feishu-text-sub); line-height: 1.65; }
+    .simulation-note { font-size: 11px; line-height: 1.6; color: var(--feishu-text-muted); }
+    .json-toggle-bar { margin: 0; }
+    .json-view-box { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .feishu-toast { position: fixed; max-width: calc(100vw - 32px); top: 20px; border-radius: 8px; }
+    @media (max-width: 800px) {
+      body { padding: 12px; }
+      .proto-layout { grid-template-columns: minmax(0, 1fr); }
+      .controls-panel { position: static; max-height: none; }
+      .chat-viewport { padding: 16px 12px; }
+      .chat-avatar { width: 28px; height: 28px; font-size: 15px; }
+      .chat-msg-row { gap: 8px; }
+      .lark-card-body, .lark-card-header { padding: 12px; }
+      .lark-btn { padding: 6px 9px; font-size: 12px; }
+      .proto-banner { padding: 16px; }
+    }
   </style>
 </head>
 <body>
-
   <div class="proto-banner">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-      <h1>🤖 飞书 Coding Agent 卡片 UI 升级原型</h1>
-      <span class="proto-tag">Issue #8 原型验证</span>
-    </div>
-    <p>
-      通过左侧场景选择器或右侧卡片按钮，亲身体验 <strong>Tier 1 动态 Header</strong>、<strong>Tier 2 写入文件看板与失败展开</strong>、以及 <strong>Tier 3 终态快捷操作与 Toast 回调</strong>。
-    </p>
+    <h1>🤖 飞书对话展示原型 <span class="proto-tag">Issue #8 · 方案 A</span></h1>
+    <p>验证「原生 CoT 过程气泡＋增强结果卡片」能否在现有设置下清楚展示进展与结果。默认采用你的配置：<strong>消息卡片＋隐藏工具＋CoT 简略</strong>。</p>
+    <p class="simulation-note">交互原型，所有消息、工具记录与快捷动作均为模拟，不会调用 Agent 或修改实际配置。CoT 外观为示意，真实样式以飞书客户端为准。</p>
   </div>
 
   <div class="proto-layout">
-    <!-- Left Controls Panel -->
-    <div class="controls-panel">
-      <h2>典型场景走查 (Scenarios)</h2>
-
-      <button class="scenario-btn active" onclick="loadScenario('happy')">
-        <span>✅ 1. 正常执行完成 (Happy Path)</span>
-        <span class="desc">绿色 Header + 耗时指标 + 写入文件清单 + 快捷按钮</span>
-      </button>
-
-      <button class="scenario-btn" onclick="loadScenario('partial_fail')">
-        <span>⚠️ 2. 部分工具失败 (Partial Failure)</span>
-        <span class="desc">橙色 Header 警示 + 单测报错强制首个展开 + 绝不粉饰</span>
-      </button>
-
-      <button class="scenario-btn" onclick="loadScenario('streaming')">
-        <span>⏳ 3. 实时运行中 (Streaming Live)</span>
-        <span class="desc">浅蓝 Header 思考态 + 运行中 Tag + ⏹ 终止按钮</span>
-      </button>
-
-      <button class="scenario-btn" onclick="loadScenario('codex')">
-        <span>🤖 4. Codex / 无文件模式</span>
-        <span class="desc">Codex 品牌标识 + 写入文件面板自适应隐藏</span>
-      </button>
-
-      <button class="scenario-btn" onclick="loadScenario('interrupted')">
-        <span>⏹ 5. 用户手动中断 (Interrupted)</span>
-        <span class="desc">中性灰 Header + 已停止 Tag + 状态归拢</span>
-      </button>
-
-      <div class="section-title">自由微调 (Free Play)</div>
-
+    <aside class="controls-panel" aria-label="原型控制">
+      <h2>对话展示设置</h2>
       <div class="form-group">
-        <label>Agent 品牌</label>
-        <select id="cfgAgent" onchange="applyCustom()">
-          <option value="claude">Claude Code (Claude 3.7 Sonnet)</option>
-          <option value="codex">Codex CLI (o3-mini)</option>
+        <label for="cfgReply">消息回复方式</label>
+        <select id="cfgReply" onchange="renderPreview()">
+          <option value="markdown">消息卡片（现有配置入口）</option>
+          <option value="card">交互卡片（兼容旧配置）</option>
+          <option value="text">纯文本</option>
         </select>
       </div>
-
       <div class="form-group">
-        <label>工作空间名称</label>
-        <input type="text" id="cfgWorkspace" value="lark-coding-agent-bridge" oninput="applyCustom()">
-      </div>
-
-      <div class="form-group">
-        <label>模拟执行耗时</label>
-        <select id="cfgDuration" onchange="applyCustom()">
-          <option value="4.2s">4.2s (极速)</option>
-          <option value="12.8s" selected>12.8s (标准)</option>
-          <option value="38.5s">38.5s (复杂排障)</option>
+        <label for="cfgTools">工具调用显示</label>
+        <select id="cfgTools" onchange="renderPreview()">
+          <option value="hide">隐藏（你的当前配置）</option>
+          <option value="show">显示</option>
         </select>
       </div>
-    </div>
+      <div class="form-group">
+        <label for="cfgCot">CoT 过程消息</label>
+        <select id="cfgCot" onchange="renderPreview()">
+          <option value="off">关闭</option>
+          <option value="brief" selected>简略（你的当前配置）</option>
+          <option value="detailed">详细</option>
+        </select>
+      </div>
+      <p class="helper-text">隐藏工具同时约束过程气泡与结果卡片；耗时、数量、错误提示和有记录的写入清单仍保留。</p>
 
-    <!-- Right Chat Viewport -->
-    <div class="chat-viewport">
-      <!-- Simulated Lark Toast -->
-      <div id="toast" class="feishu-toast">
-        <span id="toastIcon">✅</span>
-        <span id="toastText">已发送指令</span>
+      <div class="section-title">场景走查</div>
+      <div class="scenario-grid">
+        <button class="scenario-btn active" data-scenario="happy" onclick="loadScenario('happy')"><span>✅ 正常完成</span><span class="desc">当前配置的完整对话</span></button>
+        <button class="scenario-btn" data-scenario="tool_error" onclick="loadScenario('tool_error')"><span>⚠️ 工具错误后完成</span><span class="desc">警告不等于任务部分失败</span></button>
+        <button class="scenario-btn" data-scenario="streaming" onclick="loadScenario('streaming')"><span>⏳ 正在运行</span><span class="desc">CoT 中展示进展</span></button>
+        <button class="scenario-btn" data-scenario="codex" onclick="loadScenario('codex')"><span>🤖 Codex 完成</span><span class="desc">无可靠写入记录</span></button>
+        <button class="scenario-btn" data-scenario="interrupted" onclick="loadScenario('interrupted')"><span>⏹ 已中断</span><span class="desc">未完成调用单独计数</span></button>
+        <button class="scenario-btn" data-scenario="timeout" onclick="loadScenario('timeout')"><span>⏱ 已超时</span><span class="desc">终态优先于工具警告</span></button>
+        <button class="scenario-btn" data-scenario="error" onclick="loadScenario('error')"><span>❌ Agent 异常</span><span class="desc">展示异常与已产出结果</span></button>
+        <button class="scenario-btn" data-scenario="empty" onclick="loadScenario('empty')"><span>💬 没有最终正文</span><span class="desc">仍有状态与运行摘要</span></button>
+        <button class="scenario-btn" data-scenario="history_busy" onclick="loadScenario('history_busy')"><span>🕘 旧卡／当前轮忙碌</span><span class="desc">切换项目后的排队与重置</span></button>
       </div>
 
+      <div class="section-title">预览参数</div>
+      <div class="form-group">
+        <label for="cfgAgent">Agent</label>
+        <select id="cfgAgent" onchange="resetContext(); renderPreview()"><option value="claude">Claude Code</option><option value="codex">Codex</option></select>
+      </div>
+      <div class="form-group">
+        <label for="cfgWorkspace">这张卡片的工作区</label>
+        <input id="cfgWorkspace" value="lark-coding-agent-bridge" oninput="resetContext(); renderPreview()">
+      </div>
+      <div class="form-group">
+        <label for="cfgDuration">模拟运行耗时</label>
+        <select id="cfgDuration" onchange="renderPreview()"><option value="4.2s">4.2 秒</option><option value="12.8s" selected>12.8 秒</option><option value="38.5s">38.5 秒</option></select>
+      </div>
+      <button class="lark-btn lark-btn-default" onclick="restoreCurrentConfig()">恢复你的当前配置</button>
+      <p class="simulation-note">切换参数会重绘演示。真实回复方式与 CoT 模式从下一轮生效；工具可见性在下一次输出刷新时生效，历史内容不追溯重绘。</p>
+    </aside>
+
+    <main class="chat-viewport" aria-label="模拟飞书对话">
+      <div class="config-summary" id="configSummary"></div>
+      <p class="conversation-caption" id="scenarioDescription"></p>
       <div class="chat-msg-row">
+        <div class="chat-avatar" style="background:#718096">你</div>
+        <div class="chat-content-wrap"><div class="chat-sender-name">用户 · 示例请求</div><div class="user-query">请完成本次调整，并说明处理结果与写入的文件。</div></div>
+      </div>
+
+      <section class="chat-msg-row" id="cotRow" aria-label="原生 CoT 过程气泡示意">
         <div class="chat-avatar">🤖</div>
         <div class="chat-content-wrap">
-          <div class="chat-sender-name">PersonalAgent · 刚刚</div>
-
-          <!-- The Lark Card Component -->
-          <div class="lark-card" id="cardContainer">
-            <!-- Header -->
-            <div id="cardHeader" class="lark-card-header green">
-              <div class="header-text-block">
-                <div class="header-title" id="headerTitle">🤖 Claude Code</div>
-                <div class="header-subtitle" id="headerSubtitle">📁 lark-coding-agent-bridge · ⏱ 12.8s · 🛠 3 个工具</div>
-              </div>
-              <div class="header-tag green" id="headerTag">已完成</div>
-            </div>
-
-            <!-- Body -->
-            <div class="lark-card-body">
-              <!-- Thinking Panel -->
-              <div class="lark-panel" id="panelThinking">
-                <div class="lark-panel-header" onclick="togglePanel('thinkingBody', 'arrowThinking')">
-                  <span>🧠 思考过程 (Thinking)</span>
-                  <span class="panel-arrow" id="arrowThinking">▼</span>
-                </div>
-                <div class="lark-panel-content" id="thinkingBody" style="display: none;">
-                  1. 分析用户对于卡片 UI 升级的诉求。<br>
-                  2. 检查 run-renderer.ts 与 channel.ts 中状态传递。<br>
-                  3. 增加动态 Header 与快捷操作按钮。
-                </div>
-              </div>
-
-              <!-- Tool Calls -->
-              <div id="toolsArea"></div>
-
-              <!-- Answer Markdown -->
-              <div class="card-markdown-text" id="answerMarkdown">
-                已成功实施卡片 Header 状态感知改造与快捷动作分发逻辑。代码逻辑已就绪，所有核心测试均保持绿色。
-              </div>
-
-              <!-- Written Files Panel (Tier 2) -->
-              <div class="lark-panel panel-blue" id="panelWrittenFiles">
-                <div class="lark-panel-header" onclick="togglePanel('filesBody', 'arrowFiles')">
-                  <span>📝 写入文件清单 (2 个文件)</span>
-                  <span class="panel-arrow expanded" id="arrowFiles">▼</span>
-                </div>
-                <div class="lark-panel-content" id="filesBody">
-                  <div class="file-item">
-                    <span class="file-item-badge badge-mod">MOD</span>
-                    <span>src/card/run-renderer.ts</span>
-                  </div>
-                  <div class="file-item">
-                    <span class="file-item-badge badge-mod">MOD</span>
-                    <span>src/card/dispatcher.ts</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Bottom Actions (Tier 3) -->
-              <div class="card-actions-row" id="actionsRow">
-                <button class="lark-btn lark-btn-primary" onclick="triggerAction('test', '运行当前项目的单元测试并报告结果')">
-                  🧪 运行单测
-                </button>
-                <button class="lark-btn lark-btn-default" onclick="triggerAction('diff', '查看 git diff 变更并总结改动要点')">
-                  🔍 查看 Diff
-                </button>
-                <button class="lark-btn lark-btn-default" onclick="triggerAction('new', '清空当前会话并重新开始')">
-                  🆕 新会话
-                </button>
-              </div>
-
-              <div class="card-footer-tip" id="footerTip">
-                💡 快捷按钮将在当前会话中执行
-              </div>
-            </div>
+          <div class="chat-sender-name">Agent · 过程消息</div>
+          <div class="cot-bubble">
+            <div class="cot-heading"><span>🧠 处理过程</span><span id="cotStatus"></span></div>
+            <div id="cotStages"></div>
+            <div id="cotTools"></div>
           </div>
-
-          <!-- JSON Schema 2.0 Viewer -->
-          <div class="json-toggle-bar">
-            <button class="json-toggle-btn" onclick="toggleJsonView()">查看底层 Card Schema 2.0 JSON</button>
-          </div>
-          <pre class="json-view-box" id="jsonViewBox"></pre>
         </div>
-      </div>
-    </div>
+      </section>
+
+      <section class="chat-msg-row" id="resultRow" aria-label="Agent 回复">
+        <div class="chat-avatar">🤖</div>
+        <div class="chat-content-wrap">
+          <div class="chat-sender-name" id="resultCaption">Agent · 结果卡片</div>
+          <div class="plain-reply" id="plainReply" hidden></div>
+          <div class="lark-card" id="cardContainer">
+            <div id="cardHeader" class="lark-card-header green">
+              <div class="header-text-block"><div class="header-title" id="headerTitle"></div><div class="header-subtitle" id="headerSubtitle"></div></div>
+              <div class="header-tag green" id="headerTag"></div>
+            </div>
+            <div class="lark-card-body">
+              <div class="result-stats" id="resultStats"></div>
+              <div class="card-markdown-text" id="answerMarkdown"></div>
+              <div class="notice" id="errorNotice" hidden></div>
+              <div id="toolsArea"></div>
+              <details class="lark-panel panel-blue" id="panelWrittenFiles" open>
+                <summary class="lark-panel-header" id="filesTitle">📝 写入文件清单</summary>
+                <div class="lark-panel-content" id="filesBody"></div>
+              </details>
+              <div class="card-actions-row" id="actionsRow"></div>
+              <div class="card-footer-tip" id="footerTip">💡 快捷按钮将在执行时的当前会话和工作区中执行</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="context-panel" aria-label="快捷动作模拟状态">
+        <h3>快捷动作走查</h3>
+        <p class="helper-text">可先模拟当前轮忙碌或切换项目，再点击上方旧结果卡片的按钮，观察排队与执行目标。</p>
+        <dl class="context-values">
+          <dt>当前工作区</dt><dd id="currentWorkspace"></dd>
+          <dt>当前会话</dt><dd id="currentSession"></dd>
+          <dt>运行状态</dt><dd id="currentBusy"></dd>
+          <dt>待处理输入</dt><dd id="pendingCount"></dd>
+          <dt>最近一次操作</dt><dd id="lastAction" role="status"></dd>
+        </dl>
+        <ol class="pending-list" id="pendingList"></ol>
+        <div class="context-buttons">
+          <button onclick="simulateBusy()">模拟当前轮忙碌</button>
+          <button onclick="simulateSwitch()">切换到另一个项目</button>
+          <button onclick="finishCurrentRun()">模拟当前轮结束</button>
+          <button onclick="executePending()">执行待处理输入</button>
+        </div>
+        <p class="simulation-note">每次真实点击保留为一条输入，可以合批执行；平台重投去重由实际 SDK 负责，此处不模拟网络投递。</p>
+      </section>
+      <div class="json-toggle-bar"><button class="json-toggle-btn" onclick="toggleJsonView()" aria-expanded="false" id="jsonToggle">查看原型状态</button></div>
+      <pre class="json-view-box" id="jsonViewBox"></pre>
+    </main>
   </div>
+  <div id="toast" class="feishu-toast" role="status" aria-live="polite"><span id="toastIcon">✅</span><span id="toastText"></span></div>
 
   <script>
-    let currentScenario = 'happy';
-
+    // 示例数据只用于验证展示与交互，不代表真实运行记录。
+    const sampleTools = [
+      { name: 'Read', target: 'src/card/run-renderer.ts', status: 'done', args: '{"file_path":"src/card/run-renderer.ts"}', output: '已读取文件内容。' },
+      { name: 'Edit', target: 'src/card/run-renderer.ts', filePath: 'src/card/run-renderer.ts', status: 'done', args: '{"file_path":"src/card/run-renderer.ts"}', output: '写入成功。' },
+      { name: 'Write', target: 'src/card/dispatcher.ts', filePath: 'src/card/dispatcher.ts', status: 'done', args: '{"file_path":"src/card/dispatcher.ts"}', output: '写入成功。' }
+    ];
+    const failedTool = { name: 'Bash', target: 'pnpm test:unit', status: 'error', args: '{"command":"pnpm test:unit"}', output: '示例工具错误：快照不匹配。该次调用失败，Agent 随后继续处理。' };
+    const pendingTool = { name: 'Bash', target: 'pnpm test:unit', status: 'running', args: '{"command":"pnpm test:unit"}', output: '' };
     const scenarios = {
-      happy: {
-        agentKind: 'claude',
-        headerClass: 'green',
-        title: '🤖 Claude Code',
-        subtitle: '📁 lark-coding-agent-bridge · ⏱ 12.8s · 🛠 3 个工具 · 📝 2 文件修改',
-        tagText: '已完成',
-        tagClass: 'green',
-        tools: [
-          { type: 'summary', text: '☕ 2 个只读工具已收拢 (Read, Grep)' },
-          { type: 'normal', name: 'Edit', summary: 'src/card/run-renderer.ts', status: 'done' }
-        ],
-        markdown: '已成功为卡片渲染器接入 CardKit 2.0 原生 Header 与终态快捷动作条。所有单测与脱敏规则均验证通过。',
-        showFiles: true,
-        files: ['src/card/run-renderer.ts', 'src/card/dispatcher.ts'],
-        runningStop: false
-      },
-      partial_fail: {
-        agentKind: 'claude',
-        headerClass: 'orange',
-        title: '🤖 Claude Code',
-        subtitle: '📁 lark-coding-agent-bridge · ⚠️ 执行完成 (但有 1 个工具失败)',
-        tagText: '部分失败',
-        tagClass: 'orange',
-        tools: [
-          { type: 'summary', text: '☕ 2 个工具调用 (Read: ok)' },
-          {
-            type: 'error',
-            name: 'Bash',
-            summary: 'pnpm test:unit',
-            output: 'FAIL tests/unit/card/run-renderer.snapshot.test.ts\n  ✕ snapshot mismatch: header.template expected wathet but received green',
-            status: 'error'
-          }
-        ],
-        markdown: '核心逻辑已写完，但执行单测时检测到快照不匹配错误。请先检查报错信息或点击下方按钮重跑验证。',
-        showFiles: true,
-        files: ['src/card/run-renderer.ts'],
-        runningStop: false
-      },
-      streaming: {
-        agentKind: 'claude',
-        headerClass: 'wathet',
-        title: '🤖 Claude Code',
-        subtitle: '📁 lark-coding-agent-bridge · 🧰 正在调用工具: Bash',
-        tagText: '运行中 ⏳',
-        tagClass: 'blue',
-        tools: [
-          { type: 'normal', name: 'Bash', summary: 'git status --porcelain', status: 'running' }
-        ],
-        markdown: '正在扫描本地 Git 工作区与修改记录…',
-        showFiles: false,
-        runningStop: true
-      },
-      codex: {
-        agentKind: 'codex',
-        headerClass: 'green',
-        title: '🤖 Codex',
-        subtitle: '📁 lark-coding-agent-bridge · ⏱ 8.4s · 🛠 1 次命令',
-        tagText: '已完成',
-        tagClass: 'green',
-        tools: [
-          { type: 'normal', name: 'command_execution', summary: 'python3 -m unittest', status: 'done' }
-        ],
-        markdown: 'Codex CLI 已执行完毕。由于 Codex 采用纯命令工作流，写入文件面板已自适应隐藏，保持界面清爽。',
-        showFiles: false,
-        runningStop: false
-      },
-      interrupted: {
-        agentKind: 'claude',
-        headerClass: 'grey',
-        title: '🤖 Claude Code',
-        subtitle: '📁 lark-coding-agent-bridge · 用户已手动终止本次运行',
-        tagText: '已停止',
-        tagClass: 'grey',
-        tools: [
-          { type: 'summary', text: '☕ 1 个工具已中断' }
-        ],
-        markdown: '_⏹ 用户点击了终止按钮，当前任务已安全中断。_',
-        showFiles: false,
-        runningStop: false
-      }
+      happy: { terminal: 'done', description: '当前配置：原生 CoT 展示过程，结束后发送一张结果卡片；工具隐藏，有明确写入记录的文件仍可查看。', answer: `已完成本次调整。
+
+处理结果已整理，记录到的写入文件见下方清单。`, tools: sampleTools },
+      tool_error: { terminal: 'done', description: '单次工具报错后，本轮仍正常结束。保留工具错误警告；隐藏工具时不展开详情，显示工具时只展开整轮首个错误。', answer: `本轮处理已结束。
+
+过程中出现过工具错误，随后继续处理。请结合最终答复与验证结果判断任务目标是否达成。`, tools: [...sampleTools, failedTool, { ...failedTool, target: '示例后续检查', output: '第二个错误仅作为折叠摘要展示。' }] },
+      streaming: { terminal: 'running', description: '正在运行：CoT 开启时只展示原生过程气泡，不额外创建一张重复展示过程的交互卡片。', answer: `正在检查当前工作区，并处理本次调整…`, tools: [sampleTools[0], pendingTool] },
+      codex: { terminal: 'done', agent: 'codex', description: 'Codex 有命令执行记录，但没有可靠的写入文件记录；保留指标，隐藏文件清单。', answer: `已完成本次检查，结果已整理。`, tools: [{ name: 'command_execution', target: 'git diff --stat', status: 'done', args: '{"command":"git diff --stat"}', output: '示例命令输出。' }] },
+      interrupted: { terminal: 'interrupted', description: '用户中断本轮。已经返回的成功记录仍保留，未返回的调用单独计数，不直接算作失败。', answer: `本轮已中断。已记录的写入仍列在下方，未完成的工作可在后续继续。`, tools: [sampleTools[1], pendingTool] },
+      timeout: { terminal: 'timeout', description: '超时终态优先于工具警告，不把整轮改称“已完成”。', answer: `本轮因超时结束。请结合已有结果决定后续操作。`, tools: [failedTool, pendingTool] },
+      error: { terminal: 'error', description: 'Agent 异常优先于工具统计；已产生的结果和写入记录仍可查看。', answer: `本轮因 Agent 异常结束。已保留本轮已记录的结果。`, tools: [sampleTools[1], failedTool] },
+      empty: { terminal: 'done', description: '没有最终正文也保留运行状态与统计，不丢弃整张结果卡片。', answer: ``, tools: [sampleTools[0]] },
+      history_busy: { terminal: 'done', description: '这是一张旧结果卡片。当前已切到另一个项目且新一轮忙碌；点击提示词按钮会排队，“新会话”会中断并清空排队输入。', answer: `这是上一轮的处理结果。后续快捷动作会使用执行时的当前会话与工作区。`, tools: sampleTools }
     };
+    const prompts = {
+      test: '运行当前项目的单元测试并报告结果',
+      diff: '查看 git diff 变更并总结改动要点'
+    };
+    let currentScenario = 'happy';
+    let currentRun = scenarios.happy;
+    let context;
+    let toastTimer;
+
+    function readPrefs() {
+      return {
+        reply: document.getElementById('cfgReply').value,
+        showTools: document.getElementById('cfgTools').value === 'show',
+        cot: document.getElementById('cfgCot').value,
+        agent: document.getElementById('cfgAgent').value,
+        workspace: document.getElementById('cfgWorkspace').value.trim() || '当前项目',
+        duration: document.getElementById('cfgDuration').value
+      };
+    }
+
+    // 先从完整记录生成摘要，再按显示设置裁剪过程；不改动场景数据。
+    function deriveView(scenario, prefs) {
+      const tools = prefs.agent === 'codex'
+        ? (scenario.agent === 'codex' ? scenario.tools : scenario.tools.map((tool) => ({
+            ...tool, name: 'command_execution', filePath: undefined,
+            target: '示例命令', args: '{"command":"示例命令"}'
+          })))
+        : scenario.tools;
+      const errors = tools.filter((tool) => tool.status === 'error');
+      const files = [...new Set(tools.filter((tool) => tool.status === 'done' && tool.filePath).map((tool) => tool.filePath))];
+      const running = scenario.terminal === 'running';
+      let color = 'green';
+      let tag = errors.length ? `已完成 · ${errors.length} 次工具错误` : '已完成';
+      if (errors.length) color = 'orange';
+      if (running) { color = 'wathet'; tag = '运行中 ⏳'; }
+      if (scenario.terminal === 'interrupted') { color = 'grey'; tag = '已中断'; }
+      if (scenario.terminal === 'timeout') { color = 'orange'; tag = '已超时'; }
+      if (scenario.terminal === 'error') { color = 'red'; tag = 'Agent 异常'; }
+      return {
+        terminal: scenario.terminal, running, color, tag, files,
+        title: prefs.agent === 'codex' ? '🤖 Codex' : '🤖 Claude Code',
+        workspace: prefs.workspace,
+        duration: prefs.duration,
+        total: tools.length,
+        success: tools.filter((tool) => tool.status === 'done').length,
+        errors: errors.length,
+        pending: tools.filter((tool) => tool.status === 'running').length,
+        visibleTools: prefs.showTools ? tools : [],
+        answer: scenario.answer || '（本轮未返回最终正文）',
+        cotVisible: prefs.cot !== 'off',
+        resultVisible: !running || prefs.cot === 'off',
+        isPlain: prefs.reply === 'text',
+        isLightweight: running && prefs.reply === 'markdown' && prefs.cot === 'off',
+        cotDetail: prefs.cot,
+        showTools: prefs.showTools
+      };
+    }
+
+    function resetContext() {
+      context = {
+        workspace: currentScenario === 'history_busy' ? 'another-project' : readPrefs().workspace,
+        session: currentScenario === 'history_busy' ? 2 : 1,
+        busy: currentScenario === 'streaming' || currentScenario === 'history_busy',
+        pending: currentScenario === 'history_busy' ? ['补充当前轮的说明'] : [],
+        lastAction: '尚未点击快捷动作'
+      };
+    }
 
     function loadScenario(name) {
       currentScenario = name;
-      document.querySelectorAll('.scenario-btn').forEach(btn => btn.classList.remove('active'));
-      event.currentTarget.classList.add('active');
-
-      const s = scenarios[name];
-      document.getElementById('cfgAgent').value = s.agentKind;
-      renderCard(s);
+      currentRun = scenarios[name];
+      document.getElementById('cfgAgent').value = scenarios[name].agent || 'claude';
+      document.querySelectorAll('[data-scenario]').forEach((button) => {
+        button.classList.toggle('active', button.dataset.scenario === name);
+        button.setAttribute('aria-pressed', String(button.dataset.scenario === name));
+      });
+      resetContext();
+      renderPreview();
     }
 
-    function applyCustom() {
-      const s = scenarios[currentScenario];
-      s.agentKind = document.getElementById('cfgAgent').value;
-      const ws = document.getElementById('cfgWorkspace').value || 'repo';
-      const dur = document.getElementById('cfgDuration').value;
+    function restoreCurrentConfig() {
+      document.getElementById('cfgReply').value = 'markdown';
+      document.getElementById('cfgTools').value = 'hide';
+      document.getElementById('cfgCot').value = 'brief';
+      document.getElementById('cfgWorkspace').value = 'lark-coding-agent-bridge';
+      document.getElementById('cfgDuration').value = '12.8s';
+      loadScenario('happy');
+    }
 
-      s.title = s.agentKind === 'codex' ? '🤖 Codex' : '🤖 Claude Code';
-      if (s.headerClass === 'green') {
-        s.subtitle = `📁 ${ws} · ⏱ ${dur} · 🛠 3 个工具`;
+    function renderPreview() {
+      const prefs = readPrefs();
+      const scenario = currentRun;
+      const view = deriveView(scenario, prefs);
+      document.getElementById('scenarioDescription').textContent = scenario.description;
+      document.getElementById('configSummary').innerHTML = [
+        prefs.reply === 'text' ? '纯文本' : '消息卡片',
+        prefs.showTools ? '工具显示' : '工具隐藏',
+        { off: 'CoT 关闭', brief: 'CoT 简略', detailed: 'CoT 详细' }[prefs.cot]
+      ].map((label) => `<span class="config-pill">${label}</span>`).join('');
+      renderCot(view);
+      renderResult(view);
+      renderContext();
+    }
+
+    function renderCot(view) {
+      document.getElementById('cotRow').hidden = !view.cotVisible;
+      document.getElementById('cotStatus').textContent = view.running ? '处理中' : view.tag;
+      const workState = view.running ? 'active' : view.terminal === 'done' ? 'complete' : 'warning';
+      document.getElementById('cotStages').innerHTML = `
+        <div class="cot-stage complete"><div class="cot-stage-title">✓ 理解本次需求</div><p>已核对当前任务与工作区。</p></div>
+        <div class="cot-stage ${workState}"><div class="cot-stage-title">${view.running ? '⏳ 正在处理' : view.terminal === 'done' ? '✓ 处理结束' : '⚠️ 处理已结束'}</div><p>${view.running ? '正在检查现状并处理本次调整。' : '本轮过程已结束，已保留本轮运行记录。'}</p></div>
+        ${view.terminal === 'done' ? '<div class="cot-stage complete"><div class="cot-stage-title">✓ 整理结果</div><p>最终答复见下方回复。</p></div>' : ''}`;
+      document.getElementById('cotTools').innerHTML = view.visibleTools.map((tool) => {
+        const title = `${toolIcon(tool)} ${tool.name} · ${tool.target}`;
+        return `<div class="tool-summary">${escapeHtml(title)}${view.cotDetail === 'detailed' ? `<pre>${escapeHtml(tool.args || '')}</pre><pre>${escapeHtml((tool.output || '尚未返回结果').slice(0, 1200))}</pre>` : ''}</div>`;
+      }).join('');
+    }
+
+    function renderResult(view) {
+      document.getElementById('resultRow').hidden = !view.resultVisible || (view.running && view.isPlain);
+      document.getElementById('cardContainer').hidden = view.isPlain || view.isLightweight;
+      document.getElementById('plainReply').hidden = !view.isPlain && !view.isLightweight;
+      document.getElementById('plainReply').textContent = `${view.answer}${view.terminal !== 'done' ? `
+
+${view.tag}` : ''}`;
+      if (view.isLightweight && view.showTools) {
+        document.getElementById('plainReply').textContent += '\n\n' + view.visibleTools.map((tool) => `${toolIcon(tool)} ${tool.name} · ${tool.target}`).join('\n');
       }
-      renderCard(s);
-    }
-
-    function renderCard(s) {
-      // Header
-      const header = document.getElementById('cardHeader');
-      header.className = `lark-card-header ${s.headerClass}`;
-      document.getElementById('headerTitle').textContent = s.title;
-      document.getElementById('headerSubtitle').textContent = s.subtitle;
-
+      document.getElementById('resultCaption').textContent = view.isPlain ? 'Agent · 文字回复' : view.isLightweight ? 'Agent · 流式消息' : view.running ? 'Agent · 运行中的回复' : 'Agent · 结果卡片';
+      document.getElementById('cardHeader').className = `lark-card-header ${view.color}`;
+      document.getElementById('headerTitle').textContent = view.title;
+      document.getElementById('headerSubtitle').textContent = `📁 ${view.workspace}${view.running ? ' · 正在处理' : ` · ⏱ ${view.duration}`}`;
       const tag = document.getElementById('headerTag');
-      tag.className = `header-tag ${s.tagClass}`;
-      tag.textContent = s.tagText;
-
-      // Tools area
-      const toolsArea = document.getElementById('toolsArea');
-      toolsArea.innerHTML = '';
-      if (s.tools) {
-        s.tools.forEach(t => {
-          if (t.type === 'summary') {
-            const div = document.createElement('div');
-            div.className = 'lark-panel';
-            div.innerHTML = `<div class="lark-panel-header" style="color:#646A73;font-size:12px;"><span>${t.text}</span></div>`;
-            toolsArea.appendChild(div);
-          } else if (t.type === 'error') {
-            const div = document.createElement('div');
-            div.className = 'lark-panel panel-red';
-            div.innerHTML = `
-              <div class="lark-panel-header" style="color:#C41D17;">
-                <span>❌ <strong>${t.name}</strong> — ${t.summary} (强制展开)</span>
-                <span class="panel-arrow expanded">▼</span>
-              </div>
-              <div class="lark-panel-content">
-                <div class="code-box error">${escapeHtml(t.output)}</div>
-              </div>
-            `;
-            toolsArea.appendChild(div);
-          } else {
-            const div = document.createElement('div');
-            div.className = 'lark-panel';
-            const icon = t.status === 'running' ? '⏳' : '✅';
-            div.innerHTML = `
-              <div class="lark-panel-header">
-                <span>${icon} <strong>${t.name}</strong> — ${t.summary}</span>
-              </div>
-            `;
-            toolsArea.appendChild(div);
-          }
-        });
+      tag.className = `header-tag ${view.color === 'wathet' ? 'blue' : view.color}`;
+      tag.textContent = view.tag;
+      document.getElementById('answerMarkdown').textContent = view.answer;
+      document.getElementById('resultStats').innerHTML = [
+        `${view.total} 次工具调用`, `${view.success} 次成功`, `${view.errors} 次错误`,
+        ...(view.pending ? [`${view.pending} 次${view.running ? '进行中' : '未完成'}`] : [])
+      ].map((label) => `<span>${label}</span>`).join('');
+      const notice = document.getElementById('errorNotice');
+      notice.hidden = view.errors === 0;
+      notice.textContent = `⚠️ 本轮记录到 ${view.errors} 次工具错误。${view.showTools ? '首个错误详情如下，其余错误已收拢。' : '已按设置隐藏工具详情。'}`;
+      const tools = document.getElementById('toolsArea');
+      const errors = view.visibleTools.filter((tool) => tool.status === 'error');
+      // CoT 已展示正常工具过程，结果卡片只保留关键错误证据。
+      tools.innerHTML = errors.map((tool, index) => `<details class="lark-panel panel-red error-detail" ${index === 0 ? 'open' : ''}>
+        <summary class="lark-panel-header">${escapeHtml(`${toolIcon(tool)} ${tool.name} · ${tool.target}`)}</summary>
+        ${index === 0 ? `<div class="lark-panel-content"><div class="code-box error">${escapeHtml((tool.output || '未返回错误内容').slice(0, 500))}</div></div>` : ''}
+      </details>`).join('');
+      if (!view.cotVisible && view.showTools) {
+        tools.innerHTML += view.visibleTools.filter((tool) => tool.status !== 'error').map((tool) => `<div class="tool-summary">${escapeHtml(`${toolIcon(tool)} ${tool.name} · ${tool.target}`)}</div>`).join('');
       }
-
-      // Markdown
-      document.getElementById('answerMarkdown').textContent = s.markdown;
-
-      // Written Files Panel
-      const filesPanel = document.getElementById('panelWrittenFiles');
-      if (s.showFiles && s.files && s.files.length > 0) {
-        filesPanel.style.display = 'block';
-        const body = document.getElementById('filesBody');
-        body.innerHTML = s.files.map(f => `
-          <div class="file-item">
-            <span class="file-item-badge badge-mod">MOD</span>
-            <span>${escapeHtml(f)}</span>
-          </div>
-        `).join('');
-      } else {
-        filesPanel.style.display = 'none';
-      }
-
-      // Actions Row
-      const actionsRow = document.getElementById('actionsRow');
-      const footerTip = document.getElementById('footerTip');
-      if (s.runningStop) {
-        actionsRow.innerHTML = `
-          <button class="lark-btn lark-btn-danger" onclick="triggerAction('stop', '用户已终止本次运行')">
-            ⏹ 终止
-          </button>
-        `;
-        footerTip.style.display = 'none';
-      } else {
-        actionsRow.innerHTML = `
-          <button class="lark-btn lark-btn-primary" onclick="triggerAction('test', '运行当前项目的单元测试并报告结果')">
-            🧪 运行单测
-          </button>
-          <button class="lark-btn lark-btn-default" onclick="triggerAction('diff', '查看 git diff 变更并总结改动要点')">
-            🔍 查看 Diff
-          </button>
-          <button class="lark-btn lark-btn-default" onclick="triggerAction('new', '已开始新会话')">
-            🆕 新会话
-          </button>
-        `;
-        footerTip.style.display = 'block';
-      }
-
-      updateJsonView(s);
+      document.getElementById('panelWrittenFiles').hidden = view.files.length === 0;
+      document.getElementById('filesTitle').textContent = `📝 写入文件清单（${view.files.length} 个文件）`;
+      document.getElementById('filesBody').innerHTML = view.files.map((file) => `<div class="file-item"><span class="file-item-badge badge-mod">写入</span><span>${escapeHtml(file)}</span></div>`).join('');
+      document.getElementById('actionsRow').innerHTML = view.running
+        ? `<button class="lark-btn lark-btn-danger" onclick="triggerAction('stop')">⏹ 终止</button>`
+        : `<button class="lark-btn lark-btn-primary" onclick="triggerAction('test')">🧪 运行单测</button><button class="lark-btn lark-btn-default" onclick="triggerAction('diff')">🔍 查看 Diff</button><button class="lark-btn lark-btn-default" onclick="triggerAction('new')">🆕 新会话</button>`;
+      document.getElementById('footerTip').hidden = view.running;
     }
 
-    function togglePanel(bodyId, arrowId) {
-      const body = document.getElementById(bodyId);
-      const arrow = document.getElementById(arrowId);
-      const isHidden = body.style.display === 'none';
-      body.style.display = isHidden ? 'block' : 'none';
-      arrow.classList.toggle('expanded', isHidden);
+    function renderContext() {
+      document.getElementById('currentWorkspace').textContent = context.workspace;
+      document.getElementById('currentSession').textContent = `会话 ${context.session}`;
+      document.getElementById('currentBusy').textContent = context.busy ? '当前轮忙碌' : '空闲';
+      document.getElementById('pendingCount').textContent = `${context.pending.length} 条`;
+      document.getElementById('lastAction').textContent = context.lastAction;
+      document.getElementById('pendingList').innerHTML = context.pending.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+      const view = deriveView(currentRun, readPrefs());
+      document.getElementById('jsonViewBox').textContent = JSON.stringify({
+        note: '仅为原型预览状态，不是飞书接口请求或实际运行数据',
+        preferences: readPrefs(),
+        display: { ...view, visibleTools: view.showTools ? view.visibleTools : [] },
+        context
+      }, null, 2);
     }
 
-    function triggerAction(actionKey, promptText) {
+    function triggerAction(action) {
+      if (action === 'new') {
+        const wasBusy = context.busy;
+        context.busy = false;
+        context.pending = [];
+        context.session += 1;
+        context.lastAction = `${wasBusy ? '已中断当前轮、清空待处理输入并' : '已清空待处理输入并'}开始新会话；工作区：${context.workspace}`;
+        if (currentRun.terminal === 'running') {
+          currentRun = { ...currentRun, terminal: 'interrupted', description: '原运行已中断，待处理输入已清空。上方保留原运行的结果，当前会话已更新。', answer: '本轮已中断，并已开始新会话。' };
+          renderPreview();
+        }
+        showToast(context.lastAction, '🆕');
+      } else if (action === 'stop') {
+        context.busy = false;
+        context.lastAction = '已中断当前轮，待处理输入保持原状';
+        currentRun = { ...currentRun, terminal: 'interrupted', description: '已通过终止按钮结束本轮。已经返回的记录仍保留，未返回的调用单独计数。', answer: '本轮已中断。已记录的结果仍保留。' };
+        renderPreview();
+        showToast('已中断当前轮', '⏹');
+      } else if (Object.hasOwn(prompts, action)) {
+        context.pending.push(prompts[action]);
+        context.lastAction = '已加入待执行队列，将使用执行时的当前会话与工作区';
+        showToast('已加入待执行队列', '✅');
+      }
+      renderContext();
+    }
+
+    function simulateBusy() {
+      context.busy = true;
+      context.lastAction = '模拟新一轮忙碌；上方旧结果卡片保持原样';
+      renderContext();
+    }
+
+    function simulateSwitch() {
+      context.workspace = context.workspace === 'another-project' ? readPrefs().workspace : 'another-project';
+      context.busy = false;
+      context.session += 1;
+      context.lastAction = '已切换当前项目并开始新会话；旧卡片仍显示原工作区';
+      renderContext();
+    }
+
+    function finishCurrentRun() {
+      context.busy = false;
+      context.lastAction = '当前轮已结束，待处理输入仍在队列中';
+      if (currentRun.terminal === 'running') {
+        currentRun = { ...currentRun, terminal: 'done', description: '运行已完成：过程气泡结束，最终答复集中在结果卡片中。', answer: '本轮处理已结束，结果已整理。', tools: currentRun.tools.map((tool) => tool.status === 'running' ? { ...tool, status: 'done', output: '示例工具已完成。' } : tool) };
+      }
+      renderPreview();
+    }
+
+    function executePending() {
+      if (context.busy) {
+        showToast('当前轮仍忙碌，输入继续排队', '⏳');
+      } else if (context.pending.length === 0) {
+        showToast('没有待处理输入', 'ℹ️');
+      } else {
+        const count = context.pending.length;
+        context.pending = [];
+        context.busy = true;
+        context.lastAction = `已将 ${count} 条输入合入一轮，执行于 ${context.workspace} · 会话 ${context.session}`;
+        showToast(`已开始处理 ${count} 条输入`, '▶️');
+      }
+      renderContext();
+    }
+
+    function showToast(content, icon) {
+      document.getElementById('toastText').textContent = content;
+      document.getElementById('toastIcon').textContent = icon;
       const toast = document.getElementById('toast');
-      const toastText = document.getElementById('toastText');
-      const toastIcon = document.getElementById('toastIcon');
-
-      if (actionKey === 'new') {
-        toastIcon.textContent = '🆕';
-        toastText.textContent = '已重置会话 (handleNew)';
-      } else if (actionKey === 'stop') {
-        toastIcon.textContent = '⏹';
-        toastText.textContent = '已中断运行';
-        loadScenario('interrupted');
-      } else {
-        toastIcon.textContent = '⚡';
-        toastText.textContent = `已发送: ${promptText.slice(0, 15)}…`;
-      }
-
       toast.classList.add('show');
-      setTimeout(() => {
-        toast.classList.remove('show');
-      }, 2500);
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2800);
     }
 
     function toggleJsonView() {
-      const box = document.getElementById('jsonViewBox');
-      box.classList.toggle('show');
+      const expanded = document.getElementById('jsonViewBox').classList.toggle('show');
+      document.getElementById('jsonToggle').setAttribute('aria-expanded', String(expanded));
     }
 
-    function updateJsonView(s) {
-      const cardJson = {
-        schema: "2.0",
-        header: {
-          template: s.headerClass,
-          title: { tag: "plain_text", content: s.title },
-          subtitle: { tag: "plain_text", content: s.subtitle },
-          text_tag_list: [
-            { tag: "text_tag", text: { tag: "plain_text", content: s.tagText }, color: s.tagClass }
-          ]
-        },
-        body: {
-          elements: [
-            { tag: "markdown", content: s.markdown },
-            s.showFiles ? { tag: "collapsible_panel", header: { title: "📝 写入文件清单" }, elements: ["..."] } : null,
-            {
-              tag: "action",
-              actions: s.runningStop ? [
-                { tag: "button", type: "danger", text: "⏹ 终止", value: { cmd: "stop" } }
-              ] : [
-                { tag: "button", type: "primary", text: "🧪 运行单测", value: { cmd: "prompt.test" } },
-                { tag: "button", type: "default", text: "🔍 查看 Diff", value: { cmd: "prompt.diff" } },
-                { tag: "button", type: "default", text: "🆕 新会话", value: { cmd: "new" } }
-              ]
-            }
-          ].filter(Boolean)
-        }
-      };
-      document.getElementById('jsonViewBox').textContent = JSON.stringify(cardJson, null, 2);
+    function toolIcon(tool) {
+      return tool.status === 'error' ? '❌' : tool.status === 'running' ? '⏳' : '✓';
     }
 
-    function escapeHtml(str) {
-      return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    function escapeHtml(value) {
+      return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    // Initial render
-    renderCard(scenarios.happy);
+    resetContext();
+    loadScenario('happy');
   </script>
 </body>
 </html>
