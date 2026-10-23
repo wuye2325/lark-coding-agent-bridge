@@ -95,7 +95,12 @@ describe('run card renderer snapshots', () => {
     };
 
     expect(card.header?.title?.content).toBe('🤖 Codex');
-    expect(card.header?.subtitle?.content).toBe('📁 lark-coding-agent-bridge · ⏱ 处理时长 1 分 02 秒');
+    expect(card.header?.subtitle).toBeUndefined();
+    expect(card.body?.elements?.at(-1)).toMatchObject({
+      tag: 'markdown',
+      content: '📁 lark-coding-agent-bridge · ⏱ 处理时长 1 分 02 秒',
+      text_size: 'notation',
+    });
     expect(card.header?.template).toBe('red');
     expect(card.header?.text_tag_list?.[0]).toEqual({
       tag: 'text_tag',
@@ -361,10 +366,15 @@ describe('run card renderer snapshots', () => {
         subtitle?: { content?: string };
         text_tag_list?: Array<{ color?: string; text?: { content?: string } }>;
       };
+      body?: { elements?: Array<{ tag?: string; content?: string }> };
     };
 
     expect(card.header?.template).toBe('wathet');
-    expect(card.header?.subtitle?.content).toBe('📁 bridge · 正在调用工具');
+    expect(card.header?.subtitle?.content).toBe('正在调用工具');
+    expect(card.body?.elements?.at(-1)).toMatchObject({
+      tag: 'markdown',
+      content: '📁 bridge',
+    });
     expect(card.header?.text_tag_list?.[0]).toMatchObject({
       text: { content: '运行中' },
       color: 'wathet',

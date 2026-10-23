@@ -127,6 +127,11 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     elements.push(...terminalActionElements());
   }
 
+  // Workspace and timing sit at the very bottom as muted metadata, so the
+  // header stays focused on agent identity and run status.
+  const metaElement = runMetaElement(state, options);
+  if (metaElement) elements.push(metaElement);
+
   // Mask raw emails across every text field so the Feishu tenant audit doesn't
   // reject the (streamed) card with a 400 EMAIL_ADDRESS — see mask-email.ts.
   const card = {
@@ -342,19 +347,7 @@ function compactHeader<T extends { header?: unknown }>(card: T): void {
 function runHeader(state: RunState, options: RunCardRenderOptions): object {
   const stats = options.toolStats;
   const status = runStatus(state, stats);
-  const subtitle =
-    state.terminal === 'running'
-      ? [options.workspaceName ? `📁 ${options.workspaceName}` : '', runningStage(state)]
-          .filter(Boolean)
-          .join(' · ')
-      : [
-          options.workspaceName ? `📁 ${options.workspaceName}` : '',
-          options.durationMs !== undefined
-            ? `⏱ 处理时长 ${formatDuration(options.durationMs)}`
-            : '',
-        ]
-          .filter(Boolean)
-          .join(' · ');
+  const subtitle = state.terminal === 'running' ? runningStage(state) : '';
 
   return {
     template: status.template,
@@ -392,6 +385,18 @@ function runStatus(
   }
   if (state.terminal === 'done') return { label: '已完成', color: 'green', template: 'green' };
   return { label: '运行中', color: 'wathet', template: 'wathet' };
+}
+
+function runMetaElement(
+  state: RunState,
+  options: RunCardRenderOptions,
+): MarkdownElement | undefined {
+  const parts = [options.workspaceName ? `📁 ${options.workspaceName}` : ''];
+  if (state.terminal !== 'running' && options.durationMs !== undefined) {
+    parts.push(`⏱ 处理时长 ${formatDuration(options.durationMs)}`);
+  }
+  const content = parts.filter(Boolean).join(' · ');
+  return content ? noteMd(content) : undefined;
 }
 
 function runningStage(state: RunState): string {

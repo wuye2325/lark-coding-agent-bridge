@@ -644,13 +644,14 @@ describe('CoT 与最终结果卡片联动', () => {
         subtitle?: { content?: string };
         text_tag_list?: Array<{ text?: { content?: string }; color?: string }>;
       };
+      body?: { elements?: Array<{ tag?: string; content?: string }> };
     };
     const resultJson = JSON.stringify(result);
     expect(resultJson).toContain('最终答复只应出现在结果卡片中');
     expect(resultJson).not.toContain('过程只应出现在 CoT 中');
     expect(resultJson).not.toMatch(/Bash|hidden command|hidden output/);
     expect(result?.header?.title?.content).toBe(agentKind === 'claude' ? '🤖 Claude Code' : '🤖 Codex');
-    expect(result?.header?.subtitle?.content).toContain('处理时长');
+    expect(result?.body?.elements?.at(-1)?.content).toContain('处理时长');
     expect(result?.header?.text_tag_list?.[0]).toMatchObject({
       text: { content: '已完成 · 1 次工具错误' },
       color: 'orange',
