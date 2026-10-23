@@ -1,4 +1,5 @@
 import { deepMaskEmails } from './mask-email';
+import { terminalActionElements } from './terminal-actions';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
@@ -69,6 +70,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   if (state.terminal === 'running') {
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
+  } else {
+    elements.push(...terminalActionElements());
   }
 
   // Mask raw emails across every text field so the Feishu tenant audit doesn't

@@ -139,6 +139,84 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
         "tag": "collapsible_panel",
         "vertical_spacing": "8px",
       },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
     ],
   },
   "config": {
@@ -258,6 +336,84 @@ exports[`run card renderer snapshots > renders active and completed thinking 2`]
         "content": "final answer",
         "tag": "markdown",
       },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
     ],
   },
   "config": {
@@ -279,6 +435,84 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "tag": "markdown",
         "text_size": "notation",
       },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
     ],
   },
   "config": {
@@ -297,6 +531,84 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
     "elements": [
       {
         "content": "⚠️ agent 失败：process failed",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
         "tag": "markdown",
         "text_size": "notation",
       },
@@ -325,6 +637,84 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "tag": "markdown",
         "text_size": "notation",
       },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
     ],
   },
   "config": {
@@ -347,6 +737,84 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
       },
       {
         "content": "_⏱ 15 分钟无响应,已自动终止_",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
         "tag": "markdown",
         "text_size": "notation",
       },
@@ -547,6 +1015,84 @@ pwd
         "tag": "collapsible_panel",
         "vertical_spacing": "8px",
       },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
+        "tag": "markdown",
+        "text_size": "notation",
+      },
     ],
   },
   "config": {
@@ -598,6 +1144,84 @@ ENOENT
         "padding": "8px 8px 8px 8px",
         "tag": "collapsible_panel",
         "vertical_spacing": "8px",
+      },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.test",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "运行单测",
+                  "tag": "plain_text",
+                },
+                "type": "primary",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "prompt.diff",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "查看 Diff",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "cmd": "session.new",
+                    },
+                  },
+                ],
+                "tag": "button",
+                "text": {
+                  "content": "新会话",
+                  "tag": "plain_text",
+                },
+                "type": "default",
+              },
+            ],
+            "tag": "column",
+            "width": "auto",
+          },
+        ],
+        "flex_mode": "flow",
+        "horizontal_spacing": "small",
+        "tag": "column_set",
+      },
+      {
+        "content": "💡 快捷按钮将在当前会话中执行",
+        "tag": "markdown",
+        "text_size": "notation",
       },
     ],
   },

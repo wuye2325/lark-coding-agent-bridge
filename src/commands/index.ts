@@ -337,6 +337,12 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     return handleNewChat(rawName, ctx);
   }
 
+  const wasRunning = resetCurrentSession(ctx);
+  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+}
+
+/** 中断并清理当前 scope 的 Agent 会话；卡片动作复用此步骤但自行管理 pending 与反馈。 */
+export function resetCurrentSession(ctx: CommandContext): boolean {
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     ctx.sessionCatalog.archiveActive({
@@ -345,7 +351,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     });
   }
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+  return wasRunning;
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
