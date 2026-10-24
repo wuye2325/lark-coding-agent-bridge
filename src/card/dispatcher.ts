@@ -135,27 +135,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
       log.warn('terminal-action', 'denied', { scope, reason: result?.reason ?? 'missing-token-or-auth' });
       return callbackToast('卡片不可用，请重新打开结果卡片');
     }
-    try {
-      deps.pending.push(scope, {
-        messageId: deps.evt.messageId,
-        chatId,
-        chatType: mode === 'p2p' ? 'p2p' : 'group',
-        threadId,
-        senderId: operatorId,
-        senderName: deps.evt.operator.name,
-        content: result.prompt,
-        rawContentType: 'text',
-        resources: [],
-        mentions: [],
-        mentionAll: false,
-        mentionedBot: false,
-        createTime: Date.now(),
-      });
-      return callbackToast('已加入待执行队列', 'info');
-    } catch (err) {
-      log.fail('cardAction', err, { cmd, scope, step: 'queue-terminal-prompt' });
-      return callbackToast('加入待执行队列失败，请稍后重试');
-    }
+    return enqueueTerminalPrompt(deps, result.prompt, scope, threadId, mode, cmd);
   }
 
   if (cmd === 'prompt.test' || cmd === 'prompt.diff') {
@@ -165,27 +145,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
     const prompt = cmd === 'prompt.test'
       ? '运行当前项目的单元测试并报告结果'
       : '查看 git diff 变更并总结改动要点';
-    try {
-      deps.pending.push(scope, {
-        messageId: deps.evt.messageId,
-        chatId,
-        chatType: mode === 'p2p' ? 'p2p' : 'group',
-        threadId,
-        senderId: operatorId,
-        senderName: deps.evt.operator.name,
-        content: prompt,
-        rawContentType: 'text',
-        resources: [],
-        mentions: [],
-        mentionAll: false,
-        mentionedBot: false,
-        createTime: Date.now(),
-      });
-      return callbackToast('已加入待执行队列', 'info');
-    } catch (err) {
-      log.fail('cardAction', err, { cmd, scope, step: 'queue-terminal-prompt' });
-      return callbackToast('加入待执行队列失败，请稍后重试');
-    }
+    return enqueueTerminalPrompt(deps, prompt, scope, threadId, mode, cmd);
   }
 
   if (cmd) {
@@ -279,6 +239,37 @@ function isTerminalAction(cmd: string): boolean {
 
 function callbackToast(content: string, type = 'warning'): CardActionResponse {
   return { toast: { type, content } };
+}
+
+function enqueueTerminalPrompt(
+  deps: CardDispatchDeps,
+  prompt: string,
+  scope: string,
+  threadId: string | undefined,
+  mode: 'p2p' | 'group' | 'topic',
+  cmd: string,
+): CardActionResponse {
+  try {
+    deps.pending.push(scope, {
+      messageId: deps.evt.messageId,
+      chatId: deps.evt.chatId,
+      chatType: mode === 'p2p' ? 'p2p' : 'group',
+      threadId,
+      senderId: deps.evt.operator.openId,
+      senderName: deps.evt.operator.name,
+      content: prompt,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      createTime: Date.now(),
+    });
+    return callbackToast('已加入待执行队列', 'info');
+  } catch (err) {
+    log.fail('cardAction', err, { cmd, scope, step: 'queue-terminal-prompt' });
+    return callbackToast('加入待执行队列失败，请稍后重试');
+  }
 }
 
 function callbackDeniedToast(reason: string): CardActionResponse {
