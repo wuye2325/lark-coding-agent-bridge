@@ -1,3 +1,5 @@
+import { hasSharedBridgeInternalTag } from './bridge-internal-markers';
+
 export interface TerminalAction {
   label: string;
   prompt: string;
@@ -7,7 +9,7 @@ export interface TerminalActionDeclaration {
   actions: TerminalAction[];
 }
 
-const INTERNAL_PROMPT_MARKERS = /<\s*\/?\s*bridge_[a-z0-9_-]+\b|<\s*\/?\s*(?:quoted_message|interactive_card|user_message)\b|\b__bridge_[a-z0-9_]+\b|\bbridge_token\b/i;
+const ACTION_ONLY_INTERNAL_MARKERS = /\b__bridge_[a-z0-9_]+\b|\bbridge_token\b/i;
 
 export function validateTerminalAction(value: unknown): TerminalAction {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -24,7 +26,9 @@ export function validateTerminalAction(value: unknown): TerminalAction {
   }
   const prompt = input.prompt.trim();
   if (Array.from(prompt).length > 500) throw new Error('动作 prompt 不得超过 500 个字符');
-  if (INTERNAL_PROMPT_MARKERS.test(prompt)) throw new Error('动作 prompt 不得包含 Bridge 内部标记');
+  if (hasSharedBridgeInternalTag(prompt) || ACTION_ONLY_INTERNAL_MARKERS.test(prompt)) {
+    throw new Error('动作 prompt 不得包含 Bridge 内部标记');
+  }
   return { label, prompt };
 }
 

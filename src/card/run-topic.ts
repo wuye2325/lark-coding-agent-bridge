@@ -1,5 +1,7 @@
+import { hasSharedBridgeInternalTag } from './bridge-internal-markers';
+
 const MAX_DECLARED_TOPIC_CODE_POINTS = 30;
-const INTERNAL_MARKER = /<\s*\/?\s*(?:bridge_[a-z_]+|quoted_messages?|forwarded_messages|interactive_cards?|comment_context|user_input|topic_context)\b/i;
+const TOPIC_ONLY_INTERNAL_MARKERS = /<\s*\/?\s*(?:quoted_messages|forwarded_messages|interactive_cards|comment_context|user_input|topic_context)\b/i;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u;
 
 export function validateRunTopic(value: unknown): string {
@@ -10,6 +12,8 @@ export function validateRunTopic(value: unknown): string {
   }
   if (!value.trim()) throw new Error('任务主题不能为空');
   const topic = value.trim();
-  if (INTERNAL_MARKER.test(topic)) throw new Error('任务主题不得包含 Bridge 内部标记');
+  if (hasSharedBridgeInternalTag(topic) || TOPIC_ONLY_INTERNAL_MARKERS.test(topic)) {
+    throw new Error('任务主题不得包含 Bridge 内部标记');
+  }
   return topic;
 }

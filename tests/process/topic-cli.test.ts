@@ -56,6 +56,8 @@ describe('任务主题 CLI', () => {
       .rejects.toMatchObject({ stderr: expect.stringContaining('Bridge 内部标记') });
     await expect(command(['set', '--text', '包含 <user_input> 的主题'], token))
       .rejects.toMatchObject({ stderr: expect.stringContaining('Bridge 内部标记') });
+    await expect(command(['set', '--text', '包含 <user_message> 的主题'], token))
+      .rejects.toMatchObject({ stderr: expect.stringContaining('Bridge 内部标记') });
     await expect(command(['set', '--text', '包含\n换行的主题'], token))
       .rejects.toMatchObject({ stderr: expect.stringContaining('控制字符') });
     await expect(command(['set', '--text', '\t首部制表符'], token))
