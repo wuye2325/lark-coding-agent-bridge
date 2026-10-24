@@ -39,8 +39,53 @@ describe('COT event mapping', () => {
     expect(textDeltas).toEqual(['我会先生成图片。', '图片已经生成。']);
 
     const toolResult = client.events.find((event) => event.event_type === 'TOOL_CALL_RESULT');
-    expect(JSON.parse(toolResult?.content ?? '{}').content).toContain('command_execution');
+    expect(JSON.parse(toolResult?.content ?? '{}').content).toBe('');
+    const toolStart = client.events.find((event) => event.event_type === 'TOOL_CALL_START');
+    expect(JSON.parse(toolStart?.content ?? '{}').title).toBe('command_execution — echo bear');
     expect(client.completed).toEqual(['done']);
+  });
+
+  it.each([false, true])('简略工具调用只展示一次命令，结果不重复正文：isError=%s', async (isError) => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client, chatId: 'oc_chat', originMessageId: 'om_origin',
+      runId: 'run-brief', scope: 'oc_chat', inputPreview: 'run',
+    });
+    await publisher.start();
+    await consumeCotEvents(iterate([
+      { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'echo UI_TEST_A' } },
+      { type: 'tool_result', id: 'tool-1', output: 'PRIVATE_TOOL_OUTPUT', isError },
+      { type: 'done', terminationReason: 'normal' },
+    ]), publisher, { detail: 'brief' });
+
+    const toolEvents = client.events.filter(event => event.event_type.startsWith('TOOL_CALL_'));
+    const start = toolEvents.find(event => event.event_type === 'TOOL_CALL_START');
+    expect(JSON.parse(start?.content ?? '{}').title).toBe('Bash — echo UI_TEST_A');
+    const result = toolEvents.find(event => event.event_type === 'TOOL_CALL_RESULT');
+    expect(JSON.parse(result?.content ?? '{}')).toMatchObject({ toolCallId: 'tool-1', content: '' });
+    expect(JSON.stringify(toolEvents).match(/echo UI_TEST_A/g)).toHaveLength(1);
+    expect(JSON.stringify(toolEvents)).not.toContain('PRIVATE_TOOL_OUTPUT');
+  });
+
+  it.each(['done', 'error'] as const)('中断通过 %s 事件结束时保留中断说明，不发送运行失败', async (type) => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client, chatId: 'oc_chat', originMessageId: 'om_origin',
+      runId: 'run-interrupted', scope: 'oc_chat', inputPreview: 'run',
+    });
+    await publisher.start();
+    await consumeCotEvents(iterate([
+      type === 'done'
+        ? { type, terminationReason: 'interrupted' }
+        : { type, terminationReason: 'interrupted', message: '已中断' },
+    ]), publisher, { detail: 'brief' });
+
+    expect(client.completed).toEqual(['done']);
+    expect(client.events.some(event => event.event_type === 'RUN_ERROR')).toBe(false);
+    const terminal = client.events.find(event => event.event_type === 'RUN_FINISHED');
+    expect(JSON.parse(terminal?.content ?? '{}').status).toBe('interrupted');
+    expect(client.events.filter(event => event.event_type === 'TEXT_MESSAGE_CONTENT')
+      .map(event => JSON.parse(event.content).delta)).toContain('本轮任务已中断。');
   });
 
   it('includes tool args and output only in detailed mode', async () => {
@@ -270,7 +315,7 @@ describe('COT event mapping', () => {
           { type: 'done', terminationReason: 'interrupted' },
         ],
         finishedStatus: 'interrupted',
-        completedReason: 'error',
+        completedReason: 'done',
       },
       {
         runId: 'run-timeout-stage',

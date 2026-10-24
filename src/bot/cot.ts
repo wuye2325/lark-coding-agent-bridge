@@ -360,7 +360,8 @@ export async function consumeCotEvents(
         publisher.enqueue('TOOL_CALL_START', {
           toolCallId,
           icon: showSummary ? cotToolIcon(evt.name) : 'default',
-          title,
+          // 简略模式只保留调用摘要，不留下无法原位更新的“运行中”标记。
+          title: opts.detail === 'brief' ? title.replace(/^⏳ /u, '') : title,
           toolCallName: showSummary ? evt.name : 'tool',
         });
         if (detailed && evt.input !== undefined) {
@@ -390,9 +391,7 @@ export async function consumeCotEvents(
           role: 'tool',
           content: detailed
             ? truncateCot(evt.output ?? '', COT_TOOL_OUTPUT_MAX)
-            : brief
-              ? cotBriefToolTitle(brief.name, brief.input, evt.isError ? 'error' : 'done')
-              : '工具调用已完成',
+            : '',
         });
         toolBrief.delete(evt.id);
         continue;
@@ -414,8 +413,13 @@ export async function consumeCotEvents(
         flushPendingText();
         closeReasoningIfNeeded();
         closeTextIfNeeded();
+        const interrupted = evt.terminationReason === 'interrupted';
+        if (interrupted) {
+          publishTextDelta('本轮任务已中断。');
+          closeTextIfNeeded();
+        }
         finishStep();
-        if (evt.type === 'error') {
+        if (evt.type === 'error' && !interrupted) {
           publisher.enqueue('RUN_ERROR', { message: evt.message, code: evt.terminationReason ?? 'error' });
           await publisher.finish('error');
         } else {
@@ -425,7 +429,8 @@ export async function consumeCotEvents(
             runId: publisher.runId,
             status,
           });
-          await publisher.finish(status === 'done' ? 'done' : 'error');
+          // done 表示过程气泡结束；任务是否成功仍由 RUN_FINISHED 和结果卡的真实终态表达。
+          await publisher.finish(status === 'done' || interrupted ? 'done' : 'error');
         }
         return;
       }
