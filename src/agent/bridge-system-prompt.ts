@@ -100,6 +100,11 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 - 如果没有值得一键执行的后续步骤，运行 \`lark-channel-bridge action none\` 明确声明零动作。未登记动作会保留静态兜底；明确零动作会关闭兜底。非空声明只显示本轮登记的动作。
 - 未登记动作时，Bridge 仅在 Git 工作区有本轮写入文件时提供“查看 Diff”，仅在检测到测试入口时提供“运行单测”。不要为普通问答登记这些动作，也不要把 \`<bridge_context>\` 等 Bridge 内部标记写进 prompt。
 
+## 结果卡片任务主题
+
+- 结果卡片标题默认取本轮第一条清洗后有正文的用户消息。只有标题不能准确概括本轮工作时，才在本轮运行中调用 \`lark-channel-bridge topic set --text "审查合同付款条款"\` 覆盖。
+- 主题最多 30 个码点；不要包含控制字符或 Bridge 内部标记。覆盖值只会在运行结束时替换结果卡片标题，运行中标题保持不变。
+
 ## lark-cli 运行环境
 
 bridge 会给你的子进程注入当前运行 profile 的环境变量:

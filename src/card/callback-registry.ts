@@ -4,6 +4,7 @@ import { withConfigFileLock } from '../config/profile-store';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { matchesCallbackSchema, parseCallbackSchema, type CallbackSchema } from './callback-schema';
 import { validateTerminalAction, type TerminalAction, type TerminalActionDeclaration } from './terminal-actions';
+import { validateRunTopic } from './run-topic';
 
 export interface CallbackRunContext {
   runId: string;
@@ -31,6 +32,7 @@ interface RegistryData {
   registrations: Record<string, Registration>;
   events: Record<string, number>;
   terminalActions: Record<string, TerminalActionDeclaration>;
+  runTopics: Record<string, string>;
 }
 
 export interface CallbackExpected extends Omit<CallbackRunContext, 'runId' | 'agentSessionId'> {
@@ -55,6 +57,7 @@ export class CallbackRegistryStore {
       const token = randomBytes(24).toString('base64url');
       state.runs[token] = { ...context, pid: process.pid };
       delete state.terminalActions[context.runId];
+      delete state.runTopics[context.runId];
       return token;
     });
   }
@@ -64,7 +67,10 @@ export class CallbackRegistryStore {
     await this.transaction((state) => {
       const context = Object.hasOwn(state.runs, token) ? state.runs[token] : undefined;
       delete state.runs[token];
-      if (context) delete state.terminalActions[context.runId];
+      if (context) {
+        delete state.terminalActions[context.runId];
+        delete state.runTopics[context.runId];
+      }
     });
   }
 
@@ -72,6 +78,7 @@ export class CallbackRegistryStore {
     await this.transaction((state) => {
       state.runs = {};
       state.terminalActions = {};
+      state.runTopics = {};
     });
   }
 
@@ -92,6 +99,7 @@ export class CallbackRegistryStore {
     await this.transaction((state) => {
       state.runs = {};
       state.terminalActions = {};
+      state.runTopics = {};
     }, true);
   }
 
@@ -127,6 +135,22 @@ export class CallbackRegistryStore {
       const context = this.activeRun(state, token);
       const declaration = state.terminalActions[context.runId];
       return declaration ? cloneTerminalActionDeclaration(declaration) : undefined;
+    });
+  }
+
+  async setRunTopic(token: string, value: unknown): Promise<string> {
+    const topic = validateRunTopic(value);
+    return this.transaction((state) => {
+      const context = this.activeRun(state, token);
+      state.runTopics[context.runId] = topic;
+      return topic;
+    });
+  }
+
+  async getRunTopic(token: string): Promise<string | undefined> {
+    return this.transaction((state) => {
+      const context = this.activeRun(state, token);
+      return state.runTopics[context.runId];
     });
   }
 
@@ -204,7 +228,7 @@ export class CallbackRegistryStore {
         state = parseRegistryData(JSON.parse(await readFile(this.path, 'utf8')) as unknown);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-        state = { version: 1, runs: {}, registrations: {}, events: {}, terminalActions: {} };
+        state = { version: 1, runs: {}, registrations: {}, events: {}, terminalActions: {}, runTopics: {} };
       }
       for (const [id, registration] of Object.entries(state.registrations)) {
         if (registration.expiresAt < this.now() - DAY_MS) delete state.registrations[id];
@@ -228,6 +252,9 @@ function parseRegistryData(value: unknown): RegistryData {
   }
   if (value.terminalActions !== undefined && !isRecord(value.terminalActions)) {
     throw new Error('callback registry 动作声明格式无效');
+  }
+  if (value.runTopics !== undefined && !isRecord(value.runTopics)) {
+    throw new Error('callback registry 任务主题格式无效');
   }
   for (const context of Object.values(value.runs)) {
     if (!validContext(context) || typeof context.pid !== 'number' || !Number.isSafeInteger(context.pid) || context.pid <= 0) {
@@ -266,6 +293,15 @@ function parseRegistryData(value: unknown): RegistryData {
     terminalActions[runId] = { actions };
   }
   value.terminalActions = terminalActions;
+  const runTopics: RegistryData['runTopics'] = {};
+  for (const [runId, rawTopic] of Object.entries(value.runTopics ?? {})) {
+    try {
+      runTopics[runId] = validateRunTopic(rawTopic);
+    } catch {
+      // 丢弃登记文件外部写入的非法主题，避免把内部标记或控制字符渲染到卡片。
+    }
+  }
+  value.runTopics = runTopics;
   return value as unknown as RegistryData;
 }
 

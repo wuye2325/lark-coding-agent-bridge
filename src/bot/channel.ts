@@ -76,6 +76,7 @@ import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
+import { extractRunTopic, stripAttachmentRefs } from './run-topic';
 import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
@@ -914,6 +915,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
   if (!firstMsg || !lastMsg) return;
+  let runTopic = extractRunTopic(batch);
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
@@ -1173,9 +1175,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       terminalActionDeclaration = { actions: [] };
     }
   };
+  let runTopicLoaded = false;
+  const loadRunTopic = async (state: RunState): Promise<void> => {
+    if (state.terminal === 'running' || runTopicLoaded) return;
+    runTopicLoaded = true;
+    try {
+      runTopic = (await execution.getRunTopic()) ?? runTopic;
+    } catch (err) {
+      log.fail('run-topic', err, { scope, step: 'read-run-declaration' });
+    }
+  };
   const runTiming: { durationMs?: number } = {};
   const renderOptionsForState = (state: RunState): RunCardRenderOptions => ({
     ...cardRenderOptions,
+    ...(runTopic ? { runTopic } : {}),
     terminalActionsMode,
     ...(terminalActionDeclaration ? { terminalActions: terminalActionDeclaration } : {}),
     cwd,
@@ -1229,6 +1242,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           runTiming,
         );
         await loadTerminalActionDeclaration(finalState);
+        await loadRunTopic(finalState);
         await cotDone;
         if (cotPublisher.degradedReason) {
           await sendCotDegradedNotice({
@@ -1290,6 +1304,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           await loadTerminalActionDeclaration(state);
+          await loadRunTopic(state);
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (cardCtrl) {
@@ -1368,6 +1383,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async (state) => {
           await loadTerminalActionDeclaration(state);
+          await loadRunTopic(state);
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (markdownCtrl) {
@@ -1414,6 +1430,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         runTiming,
       );
       await loadTerminalActionDeclaration(finalState);
+      await loadRunTopic(finalState);
       await sendFinalReply({
         channel,
         chatId,
@@ -2090,23 +2107,6 @@ function replyQuoteTargetForMessage(
     return undefined;
   }
   return replyTo;
-}
-
-function stripAttachmentRefs(text: string, fileKeys: string[]): string {
-  if (!text || fileKeys.length === 0) return text;
-  let out = text;
-  for (const key of fileKeys) {
-    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    out = out.replace(new RegExp(`!?\\[[^\\]]*\\]\\(${escaped}\\)`, 'g'), '');
-    out = out.replace(
-      new RegExp(
-        `<\\s*(?:file|image|img|audio|video|media|folder)\\b[^>]*\\bkey\\s*=\\s*["']${escaped}["'][^>]*>`,
-        'gi',
-      ),
-      '',
-    );
-  }
-  return out.replace(/\n{3,}/g, '\n\n');
 }
 
 function toPromptQuote(q: QuotedContext): BridgePromptQuotedMessage {

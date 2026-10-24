@@ -99,11 +99,11 @@ describe('run card renderer snapshots', () => {
       body?: { elements?: Array<{ tag?: string; content?: string }> };
     };
 
-    expect(card.header?.title?.content).toBe('🤖 Codex');
+    expect(card.header?.title?.content).toBe('lark-coding-agent-bridge');
     expect(card.header?.subtitle).toBeUndefined();
     expect(card.body?.elements?.at(-1)).toMatchObject({
       tag: 'markdown',
-      content: '📁 lark-coding-agent-bridge · ⏱ 处理时长 1 分 02 秒',
+      content: '🤖 Codex · 📁 lark-coding-agent-bridge · ⏱ 处理时长 1 分 02 秒',
       text_size: 'notation',
     });
     expect(card.header?.template).toBe('red');
@@ -114,6 +114,37 @@ describe('run card renderer snapshots', () => {
     });
     expect(JSON.stringify(card.body?.elements)).toContain('工具调用：3 次 · 成功 1 · 错误 1 · 未完成 1');
     expect(JSON.stringify(card.body?.elements)).toContain('agent crashed');
+  });
+
+  it('uses the task topic as the header and omits duration from running metadata', () => {
+    const card = renderCard(initialState, {
+      runTopic: '审查付款条款',
+      agentName: '🤖 Claude Code',
+      workspaceName: '明珠合同',
+      durationMs: 12_000,
+    }) as {
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<{ tag?: string; content?: string }> };
+    };
+
+    expect(card.header?.title?.content).toBe('审查付款条款');
+    expect(card.body?.elements?.at(-1)).toMatchObject({
+      tag: 'markdown',
+      content: '🤖 Claude Code · 📁 明珠合同',
+    });
+  });
+
+  it('falls back to the workspace or generic task without showing the Agent name in the header', () => {
+    const withWorkspace = renderCard(initialState, {
+      agentName: '🤖 Codex',
+      workspaceName: '案件目录',
+    }) as { header?: { title?: { content?: string } } };
+    const withoutWorkspace = renderCard(initialState, {
+      agentName: '🤖 Codex',
+    }) as { header?: { title?: { content?: string } } };
+
+    expect(withWorkspace.header?.title?.content).toBe('案件目录');
+    expect(withoutWorkspace.header?.title?.content).toBe('任务');
   });
 
   it('shows a deduplicated manifest of successful Edit, Write, and NotebookEdit targets', () => {
@@ -390,7 +421,7 @@ describe('run card renderer snapshots', () => {
     expect(card.header?.subtitle?.content).toBe('正在调用工具');
     expect(card.body?.elements?.at(-1)).toMatchObject({
       tag: 'markdown',
-      content: '📁 bridge',
+      content: '🤖 Codex · 📁 bridge',
     });
     expect(card.header?.text_tag_list?.[0]).toMatchObject({
       text: { content: '运行中' },

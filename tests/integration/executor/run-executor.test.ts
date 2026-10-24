@@ -134,6 +134,86 @@ describe('RunExecutor', () => {
     await callbackRegistry.close();
   });
 
+  it.each([
+    ['成功', [{ type: 'done', terminationReason: 'normal' }]],
+    ['失败', [{ type: 'error', message: 'agent failed', terminationReason: 'failed' }]],
+  ] as const)('%s终态在 registry 清理后仍保留任务主题快照', async (_name, events) => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-topic-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events, callbackRegistry });
+    const callbackContext = { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' as const };
+    const execution = await h.executor.submit({
+      scopeId: 'scope-topic-terminal',
+      policy: policy(h.tmp.workspace),
+      callbackContext,
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    expect(token).toBeTruthy();
+    await callbackRegistry.setRunTopic(token!, '终态任务主题');
+
+    await collect(execution.subscribe());
+
+    expect(await execution.getRunTopic()).toBe('终态任务主题');
+    expect(JSON.parse(await readFile(registryPath, 'utf8')).runTopics).toEqual({});
+    const nextToken = await callbackRegistry.beginRun({
+      runId: execution.runId,
+      scope: 'oc_chat',
+      ...callbackContext,
+      policyFingerprint: 'fp',
+    });
+    expect(await callbackRegistry.getRunTopic(nextToken)).toBeUndefined();
+    await callbackRegistry.endRun(nextToken);
+    await callbackRegistry.close();
+  });
+
+  it('停止 forceFinish 暴露终态前先快照任务主题', async () => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-topic-stop-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events: [], callbackRegistry });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-topic-stop',
+      policy: policy(h.tmp.workspace),
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    await callbackRegistry.setRunTopic(token!, '停止前的主题');
+
+    await execution.stop();
+    await collect(execution.subscribe());
+
+    expect(await execution.getRunTopic()).toBe('停止前的主题');
+    expect(JSON.parse(await readFile(registryPath, 'utf8')).runTopics).toEqual({});
+    await callbackRegistry.close();
+  });
+
+  it('无进展超时 forceFinish 暴露终态前先快照任务主题', async () => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-topic-timeout-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events: [], callbackRegistry });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-topic-timeout',
+      policy: policy(h.tmp.workspace),
+      noProgressTimeoutMs: 100,
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    await callbackRegistry.setRunTopic(token!, '超时前的主题');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const events = await collect(execution.subscribe());
+
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', terminationReason: 'timeout' }));
+    expect(await execution.getRunTopic()).toBe('超时前的主题');
+    expect(JSON.parse(await readFile(registryPath, 'utf8')).runTopics).toEqual({});
+    await callbackRegistry.close();
+  });
+
   it('fast-fails nowait when the pool is full and queues normal submissions FIFO', async () => {
     const h = await createHarness({
       events: [

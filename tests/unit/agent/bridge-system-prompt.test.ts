@@ -48,6 +48,12 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('版本对比表');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('提取条款清单');
   });
+
+  it('documents the optional run topic override and its per-run limit', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('lark-channel-bridge topic set --text');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('30 个码点');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('运行结束时替换');
+  });
 });
 
 describe('buildBridgeSystemPrompt', () => {

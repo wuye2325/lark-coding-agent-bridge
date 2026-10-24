@@ -29,6 +29,7 @@ export interface RunCardRenderOptions {
   cwd?: string;
   agentName?: string;
   workspaceName?: string;
+  runTopic?: string;
   durationMs?: number;
   toolStats?: RunToolStats;
   writtenFiles?: string[];
@@ -72,6 +73,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   const showRunMetadata =
     options.agentName !== undefined ||
     options.workspaceName !== undefined ||
+    options.runTopic !== undefined ||
     options.durationMs !== undefined ||
     options.toolStats !== undefined;
 
@@ -147,8 +149,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     }
   }
 
-  // Workspace and timing sit at the very bottom as muted metadata, so the
-  // header stays focused on agent identity and run status.
+  // Agent 身份、工作区与处理时长置于卡片底部的弱化元信息行。
   const metaElement = runMetaElement(state, options);
   if (metaElement) elements.push(metaElement);
 
@@ -371,7 +372,7 @@ function runHeader(state: RunState, options: RunCardRenderOptions): object {
 
   return {
     template: status.template,
-    title: { tag: 'plain_text', content: options.agentName ?? '🤖 Agent' },
+    title: { tag: 'plain_text', content: options.runTopic || options.workspaceName || '任务' },
     ...(subtitle ? { subtitle: { tag: 'plain_text', content: subtitle } } : {}),
     text_tag_list: [
       {
@@ -411,7 +412,10 @@ function runMetaElement(
   state: RunState,
   options: RunCardRenderOptions,
 ): MarkdownElement | undefined {
-  const parts = [options.workspaceName ? `📁 ${options.workspaceName}` : ''];
+  const parts = [
+    options.agentName ?? '',
+    options.workspaceName ? `📁 ${options.workspaceName}` : '',
+  ];
   if (state.terminal !== 'running' && options.durationMs !== undefined) {
     parts.push(`⏱ 处理时长 ${formatDuration(options.durationMs)}`);
   }

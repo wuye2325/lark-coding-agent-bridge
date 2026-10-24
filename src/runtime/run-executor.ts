@@ -49,6 +49,7 @@ export interface RunExecution {
   subscribe(): AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
   getTerminalActions(): Promise<TerminalActionDeclaration | undefined>;
+  getRunTopic(): Promise<string | undefined>;
 }
 
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
@@ -224,6 +225,7 @@ export class RunExecutor {
             log.fail('run', err, dimensions);
           }
           log.warn('run', 'forced-cleanup', dimensions);
+          await captureRunTopic();
           await fanout.forceFinish(terminal);
           await cleanup(false);
           resolve();
@@ -284,6 +286,20 @@ export class RunExecutor {
         terminalActionDeclaration = { actions: [] };
       }
     };
+    let runTopicSnapshot: string | undefined;
+    let runTopicSnapshotReady: Promise<void> | undefined;
+    const captureRunTopic = (): Promise<void> => {
+      if (runTopicSnapshotReady) return runTopicSnapshotReady;
+      runTopicSnapshotReady = (async () => {
+        if (!this.callbackRegistry || !runOptions.callbackToken) return;
+        try {
+          runTopicSnapshot = await this.callbackRegistry.getRunTopic(runOptions.callbackToken);
+        } catch (err) {
+          log.fail('run-topic', err, { ...dimensions, step: 'snapshot-run-topic' });
+        }
+      })();
+      return runTopicSnapshotReady;
+    };
     const recoveredEvents = async function* (): AsyncGenerator<AgentEvent> {
       let retried = false;
       while (true) {
@@ -339,6 +355,7 @@ export class RunExecutor {
     const progressEvents = async function* (): AsyncGenerator<AgentEvent> {
       for await (const event of observed) {
         if (event.type === 'done') await captureTerminalActions();
+        if (isTerminalEvent(event)) await captureRunTopic();
         if (isProgressEvent(event)) armProgress();
         if (isTerminalEvent(event) && progressTimer) clearTimeout(progressTimer);
         yield event;
@@ -352,6 +369,7 @@ export class RunExecutor {
       getTerminalActions: async () => terminalActionDeclaration
         ? { actions: terminalActionDeclaration.actions.map(({ label, prompt }) => ({ label, prompt })) }
         : undefined,
+      getRunTopic: async () => runTopicSnapshot,
       stop: async () => {
         handle.interrupted = true;
         await stop();

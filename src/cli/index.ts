@@ -26,6 +26,7 @@ import {
 import { runStart } from './commands/start';
 import { runCallbackBind, runCallbackCreate } from './commands/callback';
 import { runActionAdd, runActionNone } from './commands/action';
+import { runTopicSet } from './commands/topic';
 import { runUi } from './commands/ui';
 
 const program = new Command();
@@ -250,6 +251,13 @@ action.command('add')
 action.command('none')
   .description('明确声明本轮无需终态快捷动作')
   .action(runActionNone);
+
+const topic = program.command('topic').description('声明当前 agent run 的任务主题');
+
+topic.command('set')
+  .description('覆盖当前 run 的任务主题，仅在运行结束时生效')
+  .requiredOption('--text <text>', '任务主题，不超过 30 个码点')
+  .action(runTopicSet);
 
 const secrets = program
   .command('secrets')
