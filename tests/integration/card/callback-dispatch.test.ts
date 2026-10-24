@@ -9,6 +9,7 @@ import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
 import { CallbackRegistryStore } from '../../../src/card/callback-registry.js';
+import { TerminalActionAuth } from '../../../src/card/terminal-action-auth.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';
 import type { Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
@@ -228,6 +229,47 @@ describe('signed card callback dispatch', () => {
     expect(h.sessions.resumeFor('oc_group', await realpath(h.tmp.workspace))).toBe('callback-session');
   });
 
+  it('真实 SDK 在 Bridge 重启后可重复点击签名动作，新投递入队且平台重放只入队一次', async () => {
+    const h = await createHarness({ chatMode: 'p2p' });
+    h.controls.profileConfig.access.allowedUsers.push('ou_operator');
+    const oldBridgeAuth = new TerminalActionAuth({ secret: 'secret' });
+    const prompt = '将 /matter/client@example.com/合同.docx 的违约条款提取到 /matter/条款清单.md';
+    const token = oldBridgeAuth.sign({ chatId: 'oc_group', scope: 'oc_group', prompt });
+    const ingress = await createSdkCardIngress((evt) =>
+      h.dispatch(evt.action.value as Record<string, unknown>, undefined, evt),
+    );
+    cleanups.push(() => ingress.channel.disconnect());
+
+    const click = (eventId: string) => ingress.click({
+      token: eventId,
+      action: { tag: 'button', value: { cmd: 'prompt.custom', terminal_action_token: token } },
+    });
+    expect(await click('platform-delivery-1')).toEqual({
+      toast: { type: 'info', content: '已加入待执行队列' },
+    });
+    await click('platform-delivery-1');
+    expect(await click('platform-delivery-2')).toEqual({
+      toast: { type: 'info', content: '已加入待执行队列' },
+    });
+
+    const queued = h.pending.cancel('oc_group');
+    expect(queued.map((msg) => msg.content)).toEqual([prompt, prompt]);
+    expect(queued.map((msg) => msg.chatType)).toEqual(['p2p', 'p2p']);
+  });
+
+  it('签名不绑定生成者，仍按点击者的当前访问策略拒绝无权用户', async () => {
+    const h = await createHarness({ chatMode: 'p2p' });
+    h.controls.profileConfig.access.allowedUsers = ['ou_allowed'];
+    const token = new TerminalActionAuth({ secret: 'secret' }).sign({
+      chatId: 'oc_group', scope: 'oc_group', prompt: '执行经过 Bridge 签名的预设 prompt',
+    });
+
+    expect(await h.dispatch({ cmd: 'prompt.custom', terminal_action_token: token })).toEqual({
+      toast: { type: 'warning', content: '无权操作此卡片' },
+    });
+    expect(h.pending.cancel('oc_group')).toEqual([]);
+  });
+
   it('真实 SDK 队列拒绝提示词时返回失败 Toast', async () => {
     const h = await createHarness();
     h.pending.push = () => { throw new Error('queue unavailable'); };
@@ -243,7 +285,7 @@ describe('signed card callback dispatch', () => {
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
-  it('真实 SDK 未知快捷动作返回可见失败 Toast', async () => {
+  it('真实 SDK 拒绝未签名的终态快捷动作', async () => {
     const h = await createHarness();
     const ingress = await createSdkCardIngress((evt) =>
       h.dispatch(evt.action.value as Record<string, unknown>, undefined, evt),
@@ -253,7 +295,7 @@ describe('signed card callback dispatch', () => {
     expect(await ingress.click({
       token: 'unknown-action',
       action: { tag: 'button', value: { cmd: 'prompt.custom', prompt: '客户端自由提示词' } },
-    })).toEqual({ toast: { type: 'warning', content: '未知快捷操作，请重新打开结果卡片' } });
+    })).toEqual({ toast: { type: 'warning', content: '卡片不可用，请重新打开结果卡片' } });
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
@@ -607,6 +649,7 @@ type Harness = {
   controls: Controls;
   pending: PendingQueue;
   auth: CallbackAuth;
+  terminalActionAuth: TerminalActionAuth;
   registry: CallbackRegistryStore;
   dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>, evt?: Partial<CardActionEvent>): Promise<void | CardActionResponse>;
   token(
@@ -659,6 +702,7 @@ async function createHarness(
     now: () => 1000,
     createNonce: () => nonce,
   });
+  const terminalActionAuth = new TerminalActionAuth({ secret: 'secret' });
   const chatModeCache = {
     resolve: async () => opts.chatMode ?? 'group',
   } as unknown as ChatModeCache;
@@ -679,6 +723,7 @@ async function createHarness(
     controls,
     pending,
     auth,
+    terminalActionAuth,
     registry,
     token: (action, overrides = {}) => {
       nonce = overrides.nonce ?? `nonce-${action}`;
@@ -705,6 +750,7 @@ async function createHarness(
         pending,
         chatModeCache,
         ...(opts.callbackAuth === false ? {} : { callbackAuth: auth }),
+        terminalActionAuth,
         callbackRegistry: registry,
         callbackPolicyFingerprint: opts.fingerprint ?? 'fp-1',
       }),

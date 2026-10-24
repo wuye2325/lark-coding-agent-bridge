@@ -19,6 +19,8 @@ import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { CallbackRegistryStore } from '../card/callback-registry';
+import { TerminalActionAuth } from '../card/terminal-action-auth';
+import type { TerminalActionDeclaration } from '../card/terminal-actions';
 import {
   firstToolErrorFromState,
   renderCard,
@@ -46,6 +48,7 @@ import {
   getRunIdleTimeoutMs,
   getRunNoProgressTimeoutMs,
   getShowToolCalls,
+  getTerminalActionsMode,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
@@ -223,6 +226,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         nonceStore: callbackNonceStore,
       })
     : undefined;
+  const terminalActionAuth = new TerminalActionAuth({ secret: appSecret });
   const activePolicyFingerprints = new Map<string, string>();
   // Per-scope record of the model used on the last run, so a `/config` model
   // switch can inject a one-time "model changed" note into the next (resumed)
@@ -331,6 +335,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           controls,
           cotClient,
           callbackAuth,
+          terminalActionAuth,
           activePolicyFingerprints,
           lastRunModelByScope,
           scope,
@@ -390,6 +395,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           pending,
           chatModeCache,
           callbackAuth,
+          terminalActionAuth,
           callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
           callbackRegistry,
         });
@@ -879,6 +885,7 @@ interface RunBatchDeps {
   controls: Controls;
   cotClient: CotClient;
   callbackAuth?: CallbackAuth;
+  terminalActionAuth: TerminalActionAuth;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   scope: string;
@@ -897,6 +904,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls,
     cotClient,
     callbackAuth,
+    terminalActionAuth,
     activePolicyFingerprints,
     lastRunModelByScope,
     scope,
@@ -1135,23 +1143,41 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
-  const cardRenderOptions: RunCardRenderOptions = callbackAuth
-    ? {
-        signCallback: (action: string) =>
-          callbackAuth.sign({
-            runId: execution.runId,
-            scope,
-            chatId,
-            operatorOpenId: firstMsg.senderId,
-            action,
-            policyFingerprint: flow.policy.policyFingerprint,
-            ttlMs: 24 * 60 * 60 * 1000,
-          }),
-      }
-    : {};
+  const cardRenderOptions: RunCardRenderOptions = {
+    ...(callbackAuth
+      ? {
+          signCallback: (action: string) =>
+            callbackAuth.sign({
+              runId: execution.runId,
+              scope,
+              chatId,
+              operatorOpenId: firstMsg.senderId,
+              action,
+              policyFingerprint: flow.policy.policyFingerprint,
+              ttlMs: 24 * 60 * 60 * 1000,
+            }),
+        }
+      : {}),
+    signTerminalAction: (prompt) => terminalActionAuth.sign({ chatId, scope, prompt }),
+  };
+  let terminalActionDeclaration: TerminalActionDeclaration | undefined;
+  let terminalActionDeclarationLoaded = false;
+  const loadTerminalActionDeclaration = async (state: RunState): Promise<void> => {
+    if (state.terminal !== 'done' || terminalActionDeclarationLoaded) return;
+    terminalActionDeclarationLoaded = true;
+    try {
+      terminalActionDeclaration = await execution.getTerminalActions();
+    } catch (err) {
+      log.fail('terminal-action', err, { scope, step: 'read-run-declaration' });
+      terminalActionDeclaration = { actions: [] };
+    }
+  };
   const runTiming: { durationMs?: number } = {};
   const renderOptionsForState = (state: RunState): RunCardRenderOptions => ({
     ...cardRenderOptions,
+    terminalActionsMode: getTerminalActionsMode(controls.cfg),
+    ...(terminalActionDeclaration ? { terminalActions: terminalActionDeclaration } : {}),
+    cwd,
     agentName: controls.profileConfig.agentKind === 'claude' ? '🤖 Claude Code' : '🤖 Codex',
     workspaceName: basename(cwd),
     ...(runTiming.durationMs !== undefined ? { durationMs: runTiming.durationMs } : {}),
@@ -1201,6 +1227,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           async () => {},
           runTiming,
         );
+        await loadTerminalActionDeclaration(finalState);
         await cotDone;
         if (cotPublisher.degradedReason) {
           await sendCotDegradedNotice({
@@ -1261,6 +1288,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async (state) => {
+          await loadTerminalActionDeclaration(state);
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (cardCtrl) {
@@ -1338,6 +1366,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         idleTimeoutMs,
         recordSession,
         async (state) => {
+          await loadTerminalActionDeclaration(state);
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (markdownCtrl) {
@@ -1383,6 +1412,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async () => {},
         runTiming,
       );
+      await loadTerminalActionDeclaration(finalState);
       await sendFinalReply({
         channel,
         chatId,

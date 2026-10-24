@@ -12,7 +12,7 @@ import {
   type RootConfig,
 } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
-import { getMessageReplyMode, getRequireMentionInGroup, secretKeyForApp } from '../../../src/config/schema';
+import { getMessageReplyMode, getRequireMentionInGroup, getTerminalActionsMode, secretKeyForApp } from '../../../src/config/schema';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
@@ -54,6 +54,32 @@ afterEach(async () => {
 });
 
 describe('profile-aware account and config commands', () => {
+  it('/config exposes the card follow-up setting and applies auto/off to the active profile', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness();
+
+    await h.command('/config');
+    const form = JSON.stringify(h.channel.sent.at(-1)?.content);
+    expect(form).toContain('卡片后续动作');
+    expect(form).toContain('"name":"terminal_actions"');
+    expect(form).toContain('"content":"自动"');
+    expect(form).toContain('"content":"关闭"');
+
+    await h.command('/config submit', { terminal_actions: 'off' });
+    const offRoot = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.preferences.terminalActions === 'off',
+    );
+    expect(getTerminalActionsMode(runtimeProfileConfig(offRoot, 'claude'))).toBe('off');
+    expect(getTerminalActionsMode(h.controls.cfg)).toBe('off');
+
+    await h.command('/config submit', { terminal_actions: 'auto' });
+    const autoRoot = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles.claude?.preferences.terminalActions === 'auto',
+    );
+    expect(getTerminalActionsMode(runtimeProfileConfig(autoRoot, 'claude'))).toBe('auto');
+    expect(getTerminalActionsMode(h.controls.cfg)).toBe('auto');
+  });
+
   it('saves /config submit into the active v2 profile without flattening root config', async () => {
     vi.useFakeTimers();
     const h = await createHarness();
@@ -247,6 +273,7 @@ async function createHarness(options: {
 } = {}): Promise<{
   rootDir: string;
   channel: ReturnType<typeof createFakeChannel>;
+  controls: Controls;
   command(content: string, formValue?: Record<string, unknown>): Promise<boolean>;
 }> {
   const rootDir = await mkdtemp(join(tmpdir(), 'bridge-profile-config-command-'));
@@ -275,6 +302,7 @@ async function createHarness(options: {
   return {
     rootDir,
     channel,
+    controls,
     command: (content: string, formValue?: Record<string, unknown>) =>
       tryHandleCommand({
         channel: channel as unknown as CommandContext['channel'],
