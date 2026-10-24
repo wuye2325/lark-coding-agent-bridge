@@ -3,7 +3,7 @@ import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentAdapter, AgentEvent } from '../../../src/agent/types.js';
+import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../../../src/agent/types.js';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter.js';
 import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
@@ -12,6 +12,7 @@ import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import { CallbackRegistryStore } from '../../../src/card/callback-registry.js';
+import { TerminalActionAuth } from '../../../src/card/terminal-action-auth.js';
 import { SessionCatalog } from '../../../src/session/catalog.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
@@ -603,6 +604,184 @@ describe('markdown stream startup failures', () => {
 });
 
 describe('CoT 与最终结果卡片联动', () => {
+  it('markdown+隐藏工具+简略 CoT 的实际入口用清洗后的消息主题并将 Agent 放在底部', async () => {
+    const cotBodies: string[] = [];
+    const cotUrls = mockCotApi(false, false, cotBodies);
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'brief',
+      events: [
+        { type: 'text', delta: '隐藏的过程文字' },
+        { type: 'tool_use', id: 'hidden-topic-tool', name: 'Bash', input: { command: 'hidden topic command' } },
+        { type: 'tool_result', id: 'hidden-topic-tool', output: 'hidden topic output', isError: false },
+        { type: 'final_text', content: '主题卡片的最终答复' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message('om_run_topic_primary_config', '  ，整理   合同付款条款！ '));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    const card = (h.channel.sent[0]?.content as { card?: {
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<{ content?: string }> };
+    } }).card;
+    const cardJson = JSON.stringify(card);
+    expect(card?.header?.title?.content).toBe('整理 合同付款条款');
+    expect(card?.body?.elements?.at(-1)?.content).toContain('🤖 Codex · 📁 ');
+    expect(card?.body?.elements?.at(-1)?.content).toContain('⏱ 处理时长');
+    expect(cardJson).toContain('主题卡片的最终答复');
+    expect(cardJson).not.toMatch(/隐藏的过程文字|hidden topic command|hidden topic output/);
+    expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
+    expect(cotBodies.join('\n')).not.toMatch(/hidden topic command|hidden topic output/);
+  });
+
+  it('运行中保留默认主题，终态结果卡一次性采用 Agent 覆盖', async () => {
+    const h = await createHarness({
+      agentKind: 'codex',
+      messageReply: 'card',
+      showToolCalls: false,
+      cotMessages: 'off',
+    });
+    const registry = new CallbackRegistryStore(join(h.tmp.profile, 'callback-registry.json'));
+    cleanups.push(() => registry.close());
+    const reachedRunning = deferred<void>();
+    const finishRun = deferred<void>();
+    const cards: unknown[] = [];
+    const agent: AgentAdapter = {
+      id: 'codex',
+      displayName: 'Codex',
+      isAvailable: async () => true,
+      run(opts: AgentRunOptions) {
+        return {
+          runId: opts.runId,
+          stop: async () => { finishRun.resolve(undefined); },
+          waitForExit: async () => true,
+          events: (async function* (): AsyncIterable<AgentEvent> {
+            yield { type: 'text', delta: '正在处理' };
+            reachedRunning.resolve(undefined);
+            await finishRun.promise;
+            if (!opts.callbackToken) throw new Error('测试运行未获签名 token');
+            await registry.setRunTopic(opts.callbackToken, 'Agent 声明的最终主题');
+            yield { type: 'done', terminationReason: 'normal' };
+          })(),
+        };
+      },
+    };
+    h.channel.stream = async (_chatId, input) => {
+      const card = (input as {
+        card?: {
+          initial?: unknown;
+          producer?: (ctrl: { update(next: unknown): Promise<void> }) => Promise<void>;
+        };
+      }).card;
+      if (!card) return { messageId: 'om_no_card' };
+      cards.push(card.initial);
+      await card.producer?.({ update: async (next) => { cards.push(next); } });
+      return { messageId: 'om_topic_progress' };
+    };
+    await startTestBridge(h, agent, true);
+
+    await h.channel.handlers.message?.(message('om_topic_override', '第一轮输入主题'));
+    await reachedRunning.promise;
+    await waitFor(() => cards.length >= 2);
+    const title = (value: unknown) => (value as { header?: { title?: { content?: string } } })?.header?.title?.content;
+    expect(cards.length).toBeGreaterThanOrEqual(2);
+    expect(cards.every((card) => title(card) === '第一轮输入主题')).toBe(true);
+
+    const runningCardCount = cards.length;
+    finishRun.resolve(undefined);
+    await waitFor(() => cards.some((card) => title(card) === 'Agent 声明的最终主题'));
+
+    expect(cards.slice(0, runningCardCount).every((card) => title(card) === '第一轮输入主题')).toBe(true);
+    expect(cards.slice(runningCardCount).every((card) => title(card) === 'Agent 声明的最终主题')).toBe(true);
+    expect(title(cards.at(-1))).toBe('Agent 声明的最终主题');
+    expect(JSON.stringify(cards.at(-1))).toContain('🤖 Codex · 📁 ');
+  });
+
+  it('实际 channel run 在 markdown+隐藏工具+简略 CoT 下发出已签名动作，并遵守零动作与关闭偏好', async () => {
+    const cotUrls = mockCotApi(false);
+    const h = await createHarness({
+      agentKind: 'claude',
+      messageReply: 'markdown',
+      showToolCalls: false,
+      cotMessages: 'brief',
+    });
+    const registry = new CallbackRegistryStore(join(h.tmp.profile, 'callback-registry.json'));
+    cleanups.push(() => registry.close());
+    const actionPrompt = `提取 ${join(h.tmp.workspace, '版本对比表.md')} 中的差异并发到当前会话`;
+    const firstRunStarted = deferred<void>();
+    const finishFirstRun = deferred<void>();
+    let runNumber = 0;
+    const agent: AgentAdapter = {
+      id: 'claude',
+      displayName: 'Claude Code',
+      isAvailable: async () => true,
+      run(opts) {
+        const thisRun = ++runNumber;
+        return {
+          runId: opts.runId,
+          stop: async () => {},
+          waitForExit: async () => true,
+          events: (async function* (): AsyncIterable<AgentEvent> {
+            const token = opts.callbackToken;
+            if (!token) throw new Error('测试运行未获签名 token');
+            if (thisRun === 3) await registry.declareNoTerminalActions(token);
+            else await registry.addTerminalAction(token, { label: '提取差异', prompt: actionPrompt });
+            if (thisRun === 1) {
+              yield { type: 'text', delta: '正在整理材料' };
+              firstRunStarted.resolve(undefined);
+              await finishFirstRun.promise;
+            }
+            yield { type: 'final_text', content: `最终答复 ${thisRun}` };
+            yield { type: 'tool_use', id: `hidden-${thisRun}`, name: 'Bash', input: { command: 'secret command' } };
+            yield { type: 'tool_result', id: `hidden-${thisRun}`, output: 'secret output', isError: false };
+            yield { type: 'done', terminationReason: 'normal' };
+          })(),
+        };
+      },
+    };
+    await startTestBridge(h, agent, true);
+
+    const readSentCard = async (index: number): Promise<{ card: unknown; json: string }> => {
+      await waitFor(() => h.channel.sent.length >= index);
+      const content = h.channel.sent[index - 1]?.content as { card?: unknown } | undefined;
+      expect(content?.card).toBeDefined();
+      return { card: content?.card, json: JSON.stringify(content?.card) };
+    };
+    await h.channel.handlers.message?.(message('om_action_dynamic', '制作版本对比表'));
+    await firstRunStarted.promise;
+    h.controls.cfg.preferences = { ...(h.controls.cfg.preferences ?? {}), terminalActions: 'off' };
+    finishFirstRun.resolve(undefined);
+    await waitFor(() => h.channel.sent.length >= 1);
+    const first = await readSentCard(1);
+    expect(first.json).toContain('最终答复 1');
+    expect(first.json).not.toContain('secret command');
+    expect(first.json).not.toContain('secret output');
+    const firstValues = terminalActionButtonValues(first.card);
+    expect(firstValues.map((value) => value.cmd)).toEqual(['prompt.custom']);
+    expect(new TerminalActionAuth({ secret: 'secret' }).verify(
+      String(firstValues[0]?.terminal_action_token), { chatId: 'oc_dm', scope: 'oc_dm' },
+    )).toEqual({ ok: true, prompt: actionPrompt });
+
+    await h.channel.handlers.message?.(message('om_action_off', '关闭后续动作'));
+    await waitFor(() => h.channel.sent.length >= 2);
+    const second = await readSentCard(2);
+    expect(second.json).toContain('最终答复 2');
+    expect(second.json).not.toContain('prompt.custom');
+
+    h.controls.cfg.preferences = { ...(h.controls.cfg.preferences ?? {}), terminalActions: 'auto' };
+    await h.channel.handlers.message?.(message('om_action_none', '无需后续动作'));
+    await waitFor(() => h.channel.sent.length >= 3);
+    const third = await readSentCard(3);
+    expect(third.json).toContain('最终答复 3');
+    expect(third.json).not.toContain('prompt.custom');
+    expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
+  });
+
   it.each([
     { replyMode: 'markdown' as const, agentKind: 'codex' as const },
     { replyMode: 'markdown' as const, agentKind: 'claude' as const },
@@ -629,7 +808,7 @@ describe('CoT 与最终结果卡片联动', () => {
     });
     await startTestBridge(h);
 
-    await h.channel.handlers.message?.(message('om_cot_result_card', 'run'));
+    await h.channel.handlers.message?.(message('om_cot_result_card', '检查合同付款条款'));
     await waitFor(() => h.channel.sent.length === 1);
 
     expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
@@ -650,7 +829,10 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).toContain('最终答复只应出现在结果卡片中');
     expect(resultJson).not.toContain('过程只应出现在 CoT 中');
     expect(resultJson).not.toMatch(/Bash|hidden command|hidden output/);
-    expect(result?.header?.title?.content).toBe(agentKind === 'claude' ? '🤖 Claude Code' : '🤖 Codex');
+    expect(result?.header?.title?.content).toBe('检查合同付款条款');
+    expect(result?.body?.elements?.at(-1)?.content).toContain(
+      `${agentKind === 'claude' ? '🤖 Claude Code' : '🤖 Codex'} · 📁 `,
+    );
     expect(result?.body?.elements?.at(-1)?.content).toContain('处理时长');
     expect(result?.header?.text_tag_list?.[0]).toMatchObject({
       text: { content: '已完成 · 1 次工具错误' },
@@ -865,7 +1047,7 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).toContain('另有');
     expect(resultJson).not.toMatch(/HIDDEN_BUDGET_ERROR|@example\.com/);
     expect(resultJson).toContain('[at]example.com');
-    expect(actionCommands).toEqual(['prompt.test', 'prompt.diff', 'session.new']);
+    expect(actionCommands).toBeUndefined();
     expect(cotBodies.join('\n')).not.toMatch(/HIDDEN_BUDGET_ERROR|user\d+@example\.com/);
   });
 
@@ -1587,6 +1769,17 @@ function lastCard(channel: FakeLarkChannel): string {
   const content = channel.sent.at(-1)?.content as { card?: unknown } | undefined;
   expect(content?.card).toBeDefined();
   return JSON.stringify(content?.card);
+}
+
+function terminalActionButtonValues(card: unknown): Array<Record<string, unknown>> {
+  type Button = { behaviors?: Array<{ value?: Record<string, unknown> }> };
+  type Column = { elements?: Button[] };
+  type Element = { tag?: string; columns?: Column[] };
+  const elements = (card as { body?: { elements?: Element[] } } | undefined)?.body?.elements ?? [];
+  return elements.flatMap((element) => element.tag === 'column_set'
+    ? (element.columns ?? []).flatMap((column) => (column.elements ?? [])
+      .flatMap((button) => button.behaviors?.flatMap((behavior) => behavior.value ? [behavior.value] : []) ?? []))
+    : []);
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {

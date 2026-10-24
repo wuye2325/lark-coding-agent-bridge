@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { TerminalActionAuth } from '../../../src/card/terminal-action-auth.js';
 import { renderCard } from '../../../src/card/run-renderer.js';
 import {
   initialState,
@@ -94,11 +99,11 @@ describe('run card renderer snapshots', () => {
       body?: { elements?: Array<{ tag?: string; content?: string }> };
     };
 
-    expect(card.header?.title?.content).toBe('🤖 Codex');
+    expect(card.header?.title?.content).toBe('lark-coding-agent-bridge');
     expect(card.header?.subtitle).toBeUndefined();
     expect(card.body?.elements?.at(-1)).toMatchObject({
       tag: 'markdown',
-      content: '📁 lark-coding-agent-bridge · ⏱ 处理时长 1 分 02 秒',
+      content: '🤖 Codex · 📁 lark-coding-agent-bridge · ⏱ 处理时长 1 分 02 秒',
       text_size: 'notation',
     });
     expect(card.header?.template).toBe('red');
@@ -109,6 +114,37 @@ describe('run card renderer snapshots', () => {
     });
     expect(JSON.stringify(card.body?.elements)).toContain('工具调用：3 次 · 成功 1 · 错误 1 · 未完成 1');
     expect(JSON.stringify(card.body?.elements)).toContain('agent crashed');
+  });
+
+  it('uses the task topic as the header and omits duration from running metadata', () => {
+    const card = renderCard(initialState, {
+      runTopic: '审查付款条款',
+      agentName: '🤖 Claude Code',
+      workspaceName: '明珠合同',
+      durationMs: 12_000,
+    }) as {
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<{ tag?: string; content?: string }> };
+    };
+
+    expect(card.header?.title?.content).toBe('审查付款条款');
+    expect(card.body?.elements?.at(-1)).toMatchObject({
+      tag: 'markdown',
+      content: '🤖 Claude Code · 📁 明珠合同',
+    });
+  });
+
+  it('falls back to the workspace or generic task without showing the Agent name in the header', () => {
+    const withWorkspace = renderCard(initialState, {
+      agentName: '🤖 Codex',
+      workspaceName: '案件目录',
+    }) as { header?: { title?: { content?: string } } };
+    const withoutWorkspace = renderCard(initialState, {
+      agentName: '🤖 Codex',
+    }) as { header?: { title?: { content?: string } } };
+
+    expect(withWorkspace.header?.title?.content).toBe('案件目录');
+    expect(withoutWorkspace.header?.title?.content).toBe('任务');
   });
 
   it('shows a deduplicated manifest of successful Edit, Write, and NotebookEdit targets', () => {
@@ -244,7 +280,7 @@ describe('run card renderer snapshots', () => {
       expect(cardJson).toContain('工具错误');
       expect(cardJson).toContain('Agent 错误因载荷预算截断');
       if (answer.truncated) expect(cardJson).toContain('正文因载荷预算截断');
-      expect(actionCommands).toEqual(['prompt.test', 'prompt.diff', 'session.new']);
+      expect(actionCommands).toBeUndefined();
     }
   });
 
@@ -271,11 +307,20 @@ describe('run card renderer snapshots', () => {
     );
 
     const state = stateFrom(events);
+    const auth = new TerminalActionAuth({ secret: 'budget-test-secret' });
     const card = renderCard(state, {
       agentName: '🤖 Claude Code',
       workspaceName: 'bridge',
       durationMs: 1_250,
       toolStats: { total: 51, succeeded: 50, errors: 1 },
+      terminalActions: {
+        actions: [
+          { label: '生成摘要', prompt: '将本轮主要结论整理成一段摘要' },
+          { label: '提取条款', prompt: '提取本轮审阅材料中的重要条款并标注页码' },
+          { label: '生成清单', prompt: '将本轮识别的风险整理成核对清单' },
+        ],
+      },
+      signTerminalAction: (prompt) => auth.sign({ chatId: 'oc_group', scope: 'oc_group', prompt }),
     }) as {
       header?: { template?: string; text_tag_list?: Array<{ text?: { content?: string } }> };
       body?: {
@@ -303,7 +348,10 @@ describe('run card renderer snapshots', () => {
     expect(cardJson).toContain('KEY_ERROR_EVIDENCE');
     expect(cardJson).toContain('📝 写入文件清单（50 个文件）');
     expect(cardJson).toContain('另有');
-    expect(actionCommands).toEqual(['prompt.test', 'prompt.diff', 'session.new']);
+    expect(actionCommands).toEqual(['prompt.custom', 'prompt.custom', 'prompt.custom']);
+    expect(terminalActionButtonValues(card).map((value) => auth.verify(String(value.terminal_action_token), {
+      chatId: 'oc_group', scope: 'oc_group',
+    }).ok)).toEqual([true, true, true]);
     expect(cardJson).not.toContain('@example.com');
     expect(cardJson).toContain('[at]example.com');
   });
@@ -373,7 +421,7 @@ describe('run card renderer snapshots', () => {
     expect(card.header?.subtitle?.content).toBe('正在调用工具');
     expect(card.body?.elements?.at(-1)).toMatchObject({
       tag: 'markdown',
-      content: '📁 bridge',
+      content: '🤖 Codex · 📁 bridge',
     });
     expect(card.header?.text_tag_list?.[0]).toMatchObject({
       text: { content: '运行中' },
@@ -437,28 +485,131 @@ describe('run card renderer snapshots', () => {
     });
   });
 
-  it('终态卡片提供固定快捷动作，运行中仍只展示签名终止动作', () => {
-    const terminal = JSON.stringify(renderCard(stateFrom([
+  it('done 卡片只渲染本轮已声明的动作，保留顺序且不混入静态兜底', () => {
+    const auth = new TerminalActionAuth({ secret: 'renderer-test-secret' });
+    const card = renderCard(stateFrom([
       { type: 'text', delta: '完成' },
       { type: 'done', terminationReason: 'normal' },
-    ])));
-    expect(terminal).toContain('运行单测');
-    expect(terminal).toContain('查看 Diff');
-    expect(terminal).toContain('新会话');
-    expect(terminal).toContain('💡 快捷按钮将在当前会话中执行');
-    expect(terminal).toContain('"cmd":"prompt.test"');
-    expect(terminal).toContain('"cmd":"prompt.diff"');
-    expect(terminal).toContain('"cmd":"session.new"');
-    expect(terminal).not.toContain('__bridge_cb');
-    expect(terminal).not.toContain('bridge_token');
+    ]), {
+      terminalActions: {
+        actions: [
+          { label: '导出 Word', prompt: '导出 /matter/client@example.com/对比表.docx 并发到当前会话' },
+          { label: '版本对比', prompt: '对比 /matter/旧版.docx 与 /matter/新版.docx' },
+        ],
+      },
+      signTerminalAction: (prompt) => auth.sign({ chatId: 'oc_group', scope: 'oc_group', prompt }),
+      writtenFiles: ['/matter/新版.docx'],
+    });
+    const terminal = JSON.stringify(card);
+    const actionValues = terminalActionButtonValues(card);
 
+    expect(terminal).toContain('导出 Word');
+    expect(terminal).toContain('版本对比');
+    expect(terminal.match(/prompt\.custom/g)).toHaveLength(2);
+    expect(terminal).not.toContain('client@example.com');
+    expect(actionValues.map((value) => value.cmd)).toEqual(['prompt.custom', 'prompt.custom']);
+    expect(actionValues.map((value) => auth.verify(String(value.terminal_action_token), {
+      chatId: 'oc_group', scope: 'oc_group',
+    }))).toEqual([
+      { ok: true, prompt: '导出 /matter/client@example.com/对比表.docx 并发到当前会话' },
+      { ok: true, prompt: '对比 /matter/旧版.docx 与 /matter/新版.docx' },
+    ]);
+    expect(terminal).not.toContain('运行单测');
+    expect(terminal).not.toContain('查看 Diff');
+    expect(terminal).not.toContain('新会话');
+  });
+
+  it('三个 500 Unicode 码点动作完整渲染且整卡不超过 14 KiB', () => {
+    const auth = new TerminalActionAuth({ secret: 'renderer-test-secret' });
+    const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }]), {
+      terminalActions: {
+        actions: [
+          { label: '动作一', prompt: '😀'.repeat(500) },
+          { label: '动作二', prompt: '😀'.repeat(500) },
+          { label: '动作三', prompt: '😀'.repeat(500) },
+        ],
+      },
+      signTerminalAction: (prompt) => auth.sign({ chatId: 'oc_group', scope: 'oc_group', prompt }),
+    });
+
+    const values = terminalActionButtonValues(card);
+    expect(values).toHaveLength(3);
+    expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThan(14_000);
+    expect(values.map((value) => auth.verify(String(value.terminal_action_token), {
+      chatId: 'oc_group', scope: 'oc_group',
+    }).ok)).toEqual([true, true, true]);
+  });
+
+  it('失败、中断和无进展超时终态不渲染本轮动作', () => {
+    const options = {
+      terminalActions: { actions: [{ label: '导出 Word', prompt: '导出 /matter/result.md' }] },
+      signTerminalAction: (prompt: string) => `签名:${prompt}`,
+    };
+    const states = [
+      stateFrom([{ type: 'error', message: '失败', terminationReason: 'failed' }]),
+      markInterrupted(stateFrom([{ type: 'text', delta: '部分结果' }])),
+      markIdleTimeout(stateFrom([{ type: 'text', delta: '部分结果' }]), 15),
+    ];
+
+    for (const state of states) {
+      expect(JSON.stringify(renderCard(state, options))).not.toContain('prompt.custom');
+    }
+  });
+
+  it('未声明动作时只按测试入口与 Git 写入条件显示静态兜底，明确零动作会关闭兜底', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'terminal-action-git-repo-'));
+    const ordinaryDirectory = await mkdtemp(join(tmpdir(), 'terminal-action-ordinary-'));
+    const invalidGitDirectory = await mkdtemp(join(tmpdir(), 'terminal-action-invalid-git-'));
+    execFileSync('git', ['init', repo], { stdio: 'ignore' });
+    await mkdir(join(invalidGitDirectory, '.git'));
+    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+    const done = stateFrom([
+      { type: 'tool_use', id: 'write-1', name: 'Write', input: { file_path: '/repo/result.docx' } },
+      { type: 'tool_result', id: 'write-1', output: '写入成功', isError: false },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+    const options = {
+      signTerminalAction: (prompt: string) => `签名:${prompt}`,
+      cwd: repo,
+      writtenFiles: ['/repo/result.docx'],
+    };
+
+    try {
+      const fallback = JSON.stringify(renderCard(done, options));
+      expect(fallback).toContain('运行单测');
+      expect(fallback).toContain('查看 Diff');
+      expect(fallback.match(/prompt\.custom/g)).toHaveLength(2);
+      expect(fallback).not.toContain('新会话');
+
+      const explicitZero = JSON.stringify(renderCard(done, { ...options, terminalActions: { actions: [] } }));
+      expect(explicitZero).not.toContain('运行单测');
+      expect(explicitZero).not.toContain('查看 Diff');
+
+      const disabled = JSON.stringify(renderCard(done, { ...options, terminalActionsMode: 'off' }));
+      expect(disabled).not.toContain('运行单测');
+      expect(disabled).not.toContain('查看 Diff');
+
+      const ordinary = JSON.stringify(renderCard(done, { ...options, cwd: ordinaryDirectory }));
+      expect(ordinary).not.toContain('运行单测');
+      expect(ordinary).not.toContain('查看 Diff');
+
+      const staleGitMarker = JSON.stringify(renderCard(done, { ...options, cwd: invalidGitDirectory }));
+      expect(staleGitMarker).not.toContain('查看 Diff');
+    } finally {
+      await Promise.all([
+        rm(repo, { recursive: true, force: true }),
+        rm(ordinaryDirectory, { recursive: true, force: true }),
+        rm(invalidGitDirectory, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  it('运行中仍只展示签名终止动作', () => {
     const running = JSON.stringify(renderCard(initialState, {
       signCallback: (action) => `token-for-${action}`,
     }));
     expect(running).toContain('"cmd":"stop"');
-    expect(running).not.toContain('prompt.test');
-    expect(running).not.toContain('prompt.diff');
-    expect(running).not.toContain('session.new');
+    expect(running).not.toContain('prompt.custom');
   });
 
   it('keeps local paths in user-visible cards and text fallbacks', () => {
@@ -479,6 +630,17 @@ describe('run card renderer snapshots', () => {
 
 function stateFrom(events: AgentEvent[]): RunState {
   return events.reduce((state, event) => reduce(state, event), initialState);
+}
+
+function terminalActionButtonValues(card: object): Array<Record<string, unknown>> {
+  type Button = { behaviors?: Array<{ value?: Record<string, unknown> }> };
+  type Column = { elements?: Button[] };
+  type Element = { tag?: string; columns?: Column[] };
+  const body = (card as { body?: { elements?: Element[] } }).body;
+  return (body?.elements ?? []).flatMap((element) => element.tag === 'column_set'
+    ? (element.columns ?? []).flatMap((column) => (column.elements ?? [])
+      .flatMap((button) => button.behaviors?.flatMap((behavior) => behavior.value ? [behavior.value] : []) ?? []))
+    : []);
 }
 
 function expectCard(state: RunState) {

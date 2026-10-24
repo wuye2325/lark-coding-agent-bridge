@@ -6,6 +6,7 @@ import type { PendingQueue } from '../bot/pending-queue';
 import type { ProcessPool } from '../bot/process-pool';
 import type { CallbackAuth } from './callback-auth';
 import type { CallbackExpected, CallbackRegistryStore } from './callback-registry';
+import type { TerminalActionAuth } from './terminal-action-auth';
 import type { AccessDecision } from '../policy/access';
 import { resetCurrentSession, runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { log } from '../core/logger';
@@ -40,6 +41,7 @@ export interface CardDispatchDeps {
   pending: PendingQueue;
   chatModeCache: ChatModeCache;
   callbackAuth?: CallbackAuth;
+  terminalActionAuth?: TerminalActionAuth;
   callbackRegistry?: CallbackRegistryStore;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
@@ -126,6 +128,16 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
     return;
   }
 
+  if (cmd === 'prompt.custom') {
+    const token = typeof payload.terminal_action_token === 'string' ? payload.terminal_action_token : '';
+    const result = deps.terminalActionAuth?.verify(token, { chatId, scope });
+    if (!result?.ok) {
+      log.warn('terminal-action', 'denied', { scope, reason: result?.reason ?? 'missing-token-or-auth' });
+      return callbackToast('卡片不可用，请重新打开结果卡片');
+    }
+    return enqueueTerminalPrompt(deps, result.prompt, scope, threadId, mode, cmd);
+  }
+
   if (cmd === 'prompt.test' || cmd === 'prompt.diff') {
     if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
       return;
@@ -133,27 +145,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
     const prompt = cmd === 'prompt.test'
       ? '运行当前项目的单元测试并报告结果'
       : '查看 git diff 变更并总结改动要点';
-    try {
-      deps.pending.push(scope, {
-        messageId: deps.evt.messageId,
-        chatId,
-        chatType: mode === 'p2p' ? 'p2p' : 'group',
-        threadId,
-        senderId: operatorId,
-        senderName: deps.evt.operator.name,
-        content: prompt,
-        rawContentType: 'text',
-        resources: [],
-        mentions: [],
-        mentionAll: false,
-        mentionedBot: false,
-        createTime: Date.now(),
-      });
-      return callbackToast('已加入待执行队列', 'info');
-    } catch (err) {
-      log.fail('cardAction', err, { cmd, scope, step: 'queue-terminal-prompt' });
-      return callbackToast('加入待执行队列失败，请稍后重试');
-    }
+    return enqueueTerminalPrompt(deps, prompt, scope, threadId, mode, cmd);
   }
 
   if (cmd) {
@@ -242,11 +234,42 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
 }
 
 function isTerminalAction(cmd: string): boolean {
-  return cmd === 'prompt.test' || cmd === 'prompt.diff' || cmd === 'session.new';
+  return cmd === 'prompt.test' || cmd === 'prompt.diff' || cmd === 'prompt.custom' || cmd === 'session.new';
 }
 
 function callbackToast(content: string, type = 'warning'): CardActionResponse {
   return { toast: { type, content } };
+}
+
+function enqueueTerminalPrompt(
+  deps: CardDispatchDeps,
+  prompt: string,
+  scope: string,
+  threadId: string | undefined,
+  mode: 'p2p' | 'group' | 'topic',
+  cmd: string,
+): CardActionResponse {
+  try {
+    deps.pending.push(scope, {
+      messageId: deps.evt.messageId,
+      chatId: deps.evt.chatId,
+      chatType: mode === 'p2p' ? 'p2p' : 'group',
+      threadId,
+      senderId: deps.evt.operator.openId,
+      senderName: deps.evt.operator.name,
+      content: prompt,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      createTime: Date.now(),
+    });
+    return callbackToast('已加入待执行队列', 'info');
+  } catch (err) {
+    log.fail('cardAction', err, { cmd, scope, step: 'queue-terminal-prompt' });
+    return callbackToast('加入待执行队列失败，请稍后重试');
+  }
 }
 
 function callbackDeniedToast(reason: string): CardActionResponse {

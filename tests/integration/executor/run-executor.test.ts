@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import { initialState, reduce } from '../../../src/card/run-state';
+import { CallbackRegistryStore } from '../../../src/card/callback-registry';
 import { renderText } from '../../../src/card/text-renderer';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { RunRejected, SpawnFailed } from '../../../src/runtime/errors';
@@ -67,6 +71,147 @@ describe('RunExecutor', () => {
     expect(h.agent.runs).toHaveLength(1);
     expect(rendererEvents).toEqual(events);
     expect(sessionEvents).toEqual(events);
+  });
+
+  it('done 事件先固化动作声明，run 清理后仍可渲染且 registry 已清理', async () => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-actions-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({
+      events: [{ type: 'done', terminationReason: 'normal' }],
+      callbackRegistry,
+    });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-action',
+      policy: policy(h.tmp.workspace),
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    expect(token).toBeTruthy();
+    await callbackRegistry.addTerminalAction(token!, {
+      label: '导出 Word', prompt: '导出 /matter/client@example.com/报告.docx 并发到当前会话',
+    });
+
+    await collect(execution.subscribe());
+
+    expect(await execution.getTerminalActions()).toEqual({
+      actions: [{ label: '导出 Word', prompt: '导出 /matter/client@example.com/报告.docx 并发到当前会话' }],
+    });
+    const state = JSON.parse(await readFile(registryPath, 'utf8')) as {
+      terminalActions: Record<string, unknown>;
+    };
+    expect(state.terminalActions).toEqual({});
+    await callbackRegistry.close();
+  });
+
+  it.each([
+    ['failed', [{ type: 'error', message: 'agent failed', terminationReason: 'failed' }], false],
+    ['interrupted', [], true],
+  ] as const)('%s 结束路径都会清理本轮动作声明', async (_name, events, stop) => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-action-cleanup-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events, callbackRegistry });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-action-cleanup',
+      policy: policy(h.tmp.workspace),
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    expect(token).toBeTruthy();
+    await callbackRegistry.addTerminalAction(token!, { label: '下一步', prompt: '继续处理当前文件' });
+
+    if (stop) await execution.stop();
+    else await collect(execution.subscribe());
+
+    expect(await execution.getTerminalActions()).toBeUndefined();
+    const state = JSON.parse(await readFile(registryPath, 'utf8')) as {
+      terminalActions: Record<string, unknown>;
+    };
+    expect(state.terminalActions).toEqual({});
+    await callbackRegistry.close();
+  });
+
+  it.each([
+    ['成功', [{ type: 'done', terminationReason: 'normal' }]],
+    ['失败', [{ type: 'error', message: 'agent failed', terminationReason: 'failed' }]],
+  ] as const)('%s终态在 registry 清理后仍保留任务主题快照', async (_name, events) => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-topic-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events, callbackRegistry });
+    const callbackContext = { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' as const };
+    const execution = await h.executor.submit({
+      scopeId: 'scope-topic-terminal',
+      policy: policy(h.tmp.workspace),
+      callbackContext,
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    expect(token).toBeTruthy();
+    await callbackRegistry.setRunTopic(token!, '终态任务主题');
+
+    await collect(execution.subscribe());
+
+    expect(await execution.getRunTopic()).toBe('终态任务主题');
+    expect(JSON.parse(await readFile(registryPath, 'utf8')).runTopics).toEqual({});
+    const nextToken = await callbackRegistry.beginRun({
+      runId: execution.runId,
+      scope: 'oc_chat',
+      ...callbackContext,
+      policyFingerprint: 'fp',
+    });
+    expect(await callbackRegistry.getRunTopic(nextToken)).toBeUndefined();
+    await callbackRegistry.endRun(nextToken);
+    await callbackRegistry.close();
+  });
+
+  it('停止 forceFinish 暴露终态前先快照任务主题', async () => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-topic-stop-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events: [], callbackRegistry });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-topic-stop',
+      policy: policy(h.tmp.workspace),
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    await callbackRegistry.setRunTopic(token!, '停止前的主题');
+
+    await execution.stop();
+    await collect(execution.subscribe());
+
+    expect(await execution.getRunTopic()).toBe('停止前的主题');
+    expect(JSON.parse(await readFile(registryPath, 'utf8')).runTopics).toEqual({});
+    await callbackRegistry.close();
+  });
+
+  it('无进展超时 forceFinish 暴露终态前先快照任务主题', async () => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-topic-timeout-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events: [], callbackRegistry });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-topic-timeout',
+      policy: policy(h.tmp.workspace),
+      noProgressTimeoutMs: 100,
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    await callbackRegistry.setRunTopic(token!, '超时前的主题');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const events = await collect(execution.subscribe());
+
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', terminationReason: 'timeout' }));
+    expect(await execution.getRunTopic()).toBe('超时前的主题');
+    expect(JSON.parse(await readFile(registryPath, 'utf8')).runTopics).toEqual({});
+    await callbackRegistry.close();
   });
 
   it('fast-fails nowait when the pool is full and queues normal submissions FIFO', async () => {
@@ -346,6 +491,7 @@ async function createHarness(options: {
   waitForExit?: boolean | readonly boolean[];
   poolCap?: number;
   agent?: AgentAdapter;
+  callbackRegistry?: CallbackRegistryStore;
 }): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
@@ -373,6 +519,7 @@ async function createHarness(options: {
       agent,
       pool,
       activeRuns,
+      callbackRegistry: options.callbackRegistry,
       createRunId: () => `run-${nextRun++}`,
       now: () => 1000,
       postDoneExitGraceMs: 10,

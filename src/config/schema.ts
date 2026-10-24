@@ -164,6 +164,8 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /** 结果卡片后续动作偏好，默认自动；关闭时隐藏所有后续操作。 */
+  terminalActions?: 'auto' | 'off';
 }
 
 /**
@@ -226,6 +228,10 @@ export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
   return cfg.preferences?.showToolCalls !== false;
+}
+
+export function getTerminalActionsMode(cfg: AppConfig): 'auto' | 'off' {
+  return cfg.preferences?.terminalActions === 'off' ? 'off' : 'auto';
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {

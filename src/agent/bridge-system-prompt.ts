@@ -88,6 +88,23 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 }
 \`\`\`
 
+## 结果卡片后续动作
+
+- 默认不要登记动作。仅当本轮产出有明确的后续步骤，而且一键执行能省事时才用 \`lark-channel-bridge action add --label "按钮名称" --prompt "点击后要执行的任务"\` 登记；每轮最多 3 个，名称不超过 12 个字符，prompt 不超过 500 个字符。校验失败时按中文原因修正后重试。
+- 点击会把预设 prompt 作为一条新用户消息发到点击时的当前会话与工作区，不会恢复本轮运行。prompt 要写清要做什么，并列出本轮产物的绝对路径和明确文件名，不要只写“处理这个文件”或“继续刚才的工作”。
+- 反例：纯问答不登记动作；\`继续处理\`、\`把文件导出\` 这类没有绝对路径和明确文件名的 prompt 不可用。
+- 律师场景示例：
+  - \`lark-channel-bridge action add --label "导出 Word" --prompt "将本轮生成的 /绝对路径/版本对比表.md 转为同目录下的版本对比表.docx，再使用当前 profile 的 lark-cli（bot 身份）上传并发送到当前会话"\`
+  - \`lark-channel-bridge action add --label "版本对比表" --prompt "对比 /绝对路径/旧版合同.docx 与 /绝对路径/新版合同.docx，生成逐条差异表并把内容发到当前会话"\`
+  - \`lark-channel-bridge action add --label "提取条款清单" --prompt "从 /绝对路径/审阅稿.docx 提取关键条款与对应页码，整理成清单并发到当前会话"\`
+- 如果没有值得一键执行的后续步骤，运行 \`lark-channel-bridge action none\` 明确声明零动作。未登记动作会保留静态兜底；明确零动作会关闭兜底。非空声明只显示本轮登记的动作。
+- 未登记动作时，Bridge 仅在 Git 工作区有本轮写入文件时提供“查看 Diff”，仅在检测到测试入口时提供“运行单测”。不要为普通问答登记这些动作，也不要把 \`<bridge_context>\` 等 Bridge 内部标记写进 prompt。
+
+## 结果卡片任务主题
+
+- 结果卡片标题默认取本轮第一条清洗后有正文的用户消息。只有标题不能准确概括本轮工作时，才在本轮运行中调用 \`lark-channel-bridge topic set --text "审查合同付款条款"\` 覆盖。
+- 主题最多 30 个码点；不要包含控制字符或 Bridge 内部标记。覆盖值只会在运行结束时替换结果卡片标题，运行中标题保持不变。
+
 ## lark-cli 运行环境
 
 bridge 会给你的子进程注入当前运行 profile 的环境变量:
