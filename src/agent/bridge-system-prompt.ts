@@ -97,8 +97,8 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
   - \`lark-channel-bridge action add --label "导出 Word" --prompt "将本轮生成的 /绝对路径/版本对比表.md 转为同目录下的版本对比表.docx，再使用当前 profile 的 lark-cli（bot 身份）上传并发送到当前会话"\`
   - \`lark-channel-bridge action add --label "版本对比表" --prompt "对比 /绝对路径/旧版合同.docx 与 /绝对路径/新版合同.docx，生成逐条差异表并把内容发到当前会话"\`
   - \`lark-channel-bridge action add --label "提取条款清单" --prompt "从 /绝对路径/审阅稿.docx 提取关键条款与对应页码，整理成清单并发到当前会话"\`
-- 如果没有值得一键执行的后续步骤，运行 \`lark-channel-bridge action none\` 明确声明零动作。未登记动作会保留静态兜底；明确零动作会关闭兜底。非空声明只显示本轮登记的动作。
-- 未登记动作时，Bridge 仅在 Git 工作区有本轮写入文件时提供“查看 Diff”，仅在检测到测试入口时提供“运行单测”。不要为普通问答登记这些动作，也不要把 \`<bridge_context>\` 等 Bridge 内部标记写进 prompt。
+- 结果卡片只显示本轮明确登记的动作；未登记动作或明确零动作时均不显示后续操作按钮。如果需要清空本轮已登记的动作，运行 \`lark-channel-bridge action none\`。
+- “运行单测”和“查看 Diff”也必须根据本轮任务确有需要才登记，不要为普通问答登记这些动作，也不要把 \`<bridge_context>\` 等 Bridge 内部标记写进 prompt。
 
 ## 结果卡片任务主题
 

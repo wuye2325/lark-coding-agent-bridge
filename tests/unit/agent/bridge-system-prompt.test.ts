@@ -38,11 +38,12 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('不要模仿');
   });
 
-  it('explains when to declare terminal actions and how zero actions affect static fallback', () => {
+  it('说明仅展示明确登记的后续动作，普通问答无需登记', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('lark-channel-bridge action add');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('lark-channel-bridge action none');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('明确零动作');
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('静态兜底');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('只显示本轮明确登记的动作');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('未登记动作或明确零动作时均不显示后续操作按钮');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('绝对路径');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('导出 Word');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('版本对比表');

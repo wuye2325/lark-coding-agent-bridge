@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TerminalActionAuth } from '../../../src/card/terminal-action-auth.js';
@@ -556,52 +556,50 @@ describe('run card renderer snapshots', () => {
     }
   });
 
-  it('未声明动作时只按测试入口与 Git 写入条件显示静态兜底，明确零动作会关闭兜底', async () => {
+  it('有测试入口的 Git 仓库中，问答和文件写入均不会自动生成后续动作', async () => {
     const repo = await mkdtemp(join(tmpdir(), 'terminal-action-git-repo-'));
-    const ordinaryDirectory = await mkdtemp(join(tmpdir(), 'terminal-action-ordinary-'));
-    const invalidGitDirectory = await mkdtemp(join(tmpdir(), 'terminal-action-invalid-git-'));
-    execFileSync('git', ['init', repo], { stdio: 'ignore' });
-    await mkdir(join(invalidGitDirectory, '.git'));
-    await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
-    const done = stateFrom([
-      { type: 'tool_use', id: 'write-1', name: 'Write', input: { file_path: '/repo/result.docx' } },
-      { type: 'tool_result', id: 'write-1', output: '写入成功', isError: false },
-      { type: 'done', terminationReason: 'normal' },
-    ]);
-    const options = {
-      signTerminalAction: (prompt: string) => `签名:${prompt}`,
-      cwd: repo,
-      writtenFiles: ['/repo/result.docx'],
-    };
-
     try {
-      const fallback = JSON.stringify(renderCard(done, options));
-      expect(fallback).toContain('运行单测');
-      expect(fallback).toContain('查看 Diff');
-      expect(fallback.match(/prompt\.custom/g)).toHaveLength(2);
-      expect(fallback).not.toContain('新会话');
-
-      const explicitZero = JSON.stringify(renderCard(done, { ...options, terminalActions: { actions: [] } }));
-      expect(explicitZero).not.toContain('运行单测');
-      expect(explicitZero).not.toContain('查看 Diff');
-
-      const disabled = JSON.stringify(renderCard(done, { ...options, terminalActionsMode: 'off' }));
-      expect(disabled).not.toContain('运行单测');
-      expect(disabled).not.toContain('查看 Diff');
-
-      const ordinary = JSON.stringify(renderCard(done, { ...options, cwd: ordinaryDirectory }));
-      expect(ordinary).not.toContain('运行单测');
-      expect(ordinary).not.toContain('查看 Diff');
-
-      const staleGitMarker = JSON.stringify(renderCard(done, { ...options, cwd: invalidGitDirectory }));
-      expect(staleGitMarker).not.toContain('查看 Diff');
+      execFileSync('git', ['init', repo], { stdio: 'ignore' });
+      await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+      const states = [
+        stateFrom([
+          { type: 'text', delta: '这是问答结果' },
+          { type: 'done', terminationReason: 'normal' },
+        ]),
+        stateFrom([
+          { type: 'tool_use', id: 'write-1', name: 'Write', input: { file_path: '/repo/result.docx' } },
+          { type: 'tool_result', id: 'write-1', output: '写入成功', isError: false },
+          { type: 'done', terminationReason: 'normal' },
+        ]),
+      ];
+      for (const state of states) {
+        for (const terminalActions of [undefined, { actions: [] }]) {
+          const card = renderCard(state, {
+            cwd: repo,
+            terminalActions,
+            signTerminalAction: (prompt) => `签名:${prompt}`,
+          });
+          expect(terminalActionButtonValues(card)).toEqual([]);
+          const text = JSON.stringify(card);
+          expect(text).not.toContain('运行单测');
+          expect(text).not.toContain('查看 Diff');
+          expect(text).not.toContain('快捷按钮将在');
+        }
+      }
     } finally {
-      await Promise.all([
-        rm(repo, { recursive: true, force: true }),
-        rm(ordinaryDirectory, { recursive: true, force: true }),
-        rm(invalidGitDirectory, { recursive: true, force: true }),
-      ]);
+      await rm(repo, { recursive: true, force: true });
     }
+  });
+
+  it('关闭后续动作时不显示已登记的动作及按钮提示', () => {
+    const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }]), {
+      terminalActionsMode: 'off',
+      terminalActions: { actions: [{ label: '导出 Word', prompt: '导出 /matter/result.md' }] },
+      signTerminalAction: (prompt) => `签名:${prompt}`,
+    });
+
+    expect(terminalActionButtonValues(card)).toEqual([]);
+    expect(JSON.stringify(card)).not.toContain('快捷按钮将在');
   });
 
   it('运行中仍只展示签名终止动作', () => {

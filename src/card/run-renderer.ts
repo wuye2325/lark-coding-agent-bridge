@@ -1,7 +1,6 @@
 import { deepMaskEmails, maskEmails } from './mask-email';
 import { terminalActionElements } from './terminal-actions';
 import type { TerminalActionDeclaration } from './terminal-actions';
-import { detectTerminalActionFallbackContext } from './terminal-action-context';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
@@ -132,21 +131,7 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
   } else if (state.terminal === 'done' && options.terminalActionsMode !== 'off') {
-    let declaration = options.terminalActions;
-    if (!declaration) {
-      const fallbackContext = detectTerminalActionFallbackContext(options.cwd);
-      declaration = {
-        actions: [
-          ...(fallbackContext.testEntrypoint ? [{ label: '运行单测', prompt: '运行当前项目的测试并报告结果' }] : []),
-          ...(writtenFiles.length > 0 && fallbackContext.gitRepository
-            ? [{ label: '查看 Diff', prompt: '查看 Git 工作区的 Diff 并总结本轮改动' }]
-            : []),
-        ],
-      };
-    }
-    if (options.terminalActions || declaration.actions.length > 0) {
-      elements.push(...terminalActionElements(declaration, options.signTerminalAction));
-    }
+    elements.push(...terminalActionElements(options.terminalActions, options.signTerminalAction));
   }
 
   // Agent 身份、工作区与处理时长置于卡片底部的弱化元信息行。
