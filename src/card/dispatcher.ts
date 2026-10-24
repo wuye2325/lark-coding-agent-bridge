@@ -50,6 +50,7 @@ export interface CardDispatchDeps {
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void | CardActionResponse> {
   const value = deps.evt.action.value;
   if (!value || typeof value !== 'object') {
+    log.warn('cardAction', 'denied', { reason: 'invalid-action-value', messageId: deps.evt.messageId });
     return callbackToast('未知卡片操作，请重新打开结果卡片');
   }
   const payload = value as Record<string, unknown>;
@@ -57,6 +58,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
   const operatorId = deps.evt.operator.openId;
   const chatId = deps.evt.chatId;
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
+  log.info('cardAction', 'received', { cmd, messageId: deps.evt.messageId });
 
   // CardKit 2.0 form submits drop user-input values from action.value; they
   // arrive on raw.action.form_value. The SDK forwards the raw event when
@@ -73,6 +75,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void | C
   // and can skip the chat allowlist for DMs.
   const resolvedScope = await resolveScope(deps, isTerminalAction(cmd));
   if ('error' in resolvedScope) {
+    log.warn('cardAction', 'denied', { cmd, reason: resolvedScope.error });
     return callbackToast('无法确认卡片所属话题，请稍后重试');
   }
   const { scope, threadId, mode } = resolvedScope;
@@ -250,7 +253,8 @@ function enqueueTerminalPrompt(
   cmd: string,
 ): CardActionResponse {
   try {
-    deps.pending.push(scope, {
+    const busy = deps.pending.isBlocked(scope) || Boolean(deps.activeRuns.get(scope));
+    const queued = deps.pending.push(scope, {
       messageId: deps.evt.messageId,
       chatId: deps.evt.chatId,
       chatType: mode === 'p2p' ? 'p2p' : 'group',
@@ -265,7 +269,8 @@ function enqueueTerminalPrompt(
       mentionedBot: false,
       createTime: Date.now(),
     });
-    return callbackToast('已加入待执行队列', 'info');
+    log.info('cardAction', 'enqueued', { cmd, scope, busy, queued });
+    return callbackToast(busy ? '已加入待执行队列' : '已发起，准备处理', 'info');
   } catch (err) {
     log.fail('cardAction', err, { cmd, scope, step: 'queue-terminal-prompt' });
     return callbackToast('加入待执行队列失败，请稍后重试');

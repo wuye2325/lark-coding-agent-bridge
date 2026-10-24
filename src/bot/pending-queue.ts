@@ -62,6 +62,10 @@ export class PendingQueue {
     this.blocked.clear();
   }
 
+  isBlocked(scope: string): boolean {
+    return this.blocked.has(scope);
+  }
+
   /** Pause the debounce timer; pushed messages keep accumulating. */
   block(scope: string): void {
     if (this.blocked.has(scope)) return;

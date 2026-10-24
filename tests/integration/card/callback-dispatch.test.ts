@@ -1,7 +1,8 @@
 import type { CardActionEvent, CardActionResponse, NormalizedMessage } from '@larksuite/channel';
-import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { closeLogger, configureLogger, flushLogger, withTrace } from '../../../src/core/logger.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { commandSessionCatalogIdentity } from '../../../src/bot/session-catalog-identity.js';
@@ -26,6 +27,8 @@ const cleanups: Array<() => Promise<void>> = [];
 
 describe('signed card callback dispatch', () => {
   afterEach(async () => {
+    await closeLogger();
+    configureLogger({ logsDir: '', now: () => new Date() });
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
@@ -192,13 +195,13 @@ describe('signed card callback dispatch', () => {
       action: { tag: 'button', value: { cmd: 'prompt.test', prompt: '执行客户端自由提示词' } },
     };
     expect(await ingress.click({ token: 'same-platform-event', ...testAction })).toEqual({
-      toast: { type: 'info', content: '已加入待执行队列' },
+      toast: { type: 'info', content: '已发起，准备处理' },
     });
     await ingress.click({ token: 'same-platform-event', ...testAction });
     expect(await ingress.click({
       token: 'second-user-click',
       action: { tag: 'button', value: { cmd: 'prompt.diff', prompt: '另一个客户端自由提示词' } },
-    })).toEqual({ toast: { type: 'info', content: '已加入待执行队列' } });
+    })).toEqual({ toast: { type: 'info', content: '已发起，准备处理' } });
 
     const wrongScope = h.pending.cancel(chatMode === 'topic' ? 'oc_group' : 'oc_group:th_topic');
     expect(wrongScope).toEqual([]);
@@ -211,6 +214,56 @@ describe('signed card callback dispatch', () => {
     expect(queued.map((msg) => msg.threadId)).toEqual(
       chatMode === 'topic' ? ['th_topic', 'th_topic'] : [undefined, undefined],
     );
+  });
+
+  it.each(['prompt.test', 'prompt.diff', 'prompt.custom'])('真实 SDK 的 %s 记录接收和入队，不记录提示词与签名', async (cmd) => {
+    const h = await createHarness({ chatMode: 'p2p' });
+    h.controls.profileConfig.access.allowedUsers.push('ou_operator');
+    const logsDir = join(h.tmp.profile, 'logs');
+    configureLogger({ logsDir, now: () => new Date('2026-10-24T00:00:00Z') });
+    const token = h.terminalActionAuth.sign({ chatId: 'oc_group', scope: 'oc_group', prompt: 'SECRET_PROMPT_CONTENT' });
+    const ingress = await createSdkCardIngress((evt) => withTrace({ traceId: 'click-trace' }, () =>
+      h.dispatch(evt.action.value as Record<string, unknown>, undefined, evt)),
+    );
+    cleanups.push(() => ingress.channel.disconnect());
+    await ingress.click({
+      token: 'log-delivery',
+      action: { tag: 'button', value: { cmd, terminal_action_token: token } },
+    });
+    await flushLogger();
+    const content = await readFile(join(logsDir, 'bridge-20261024.jsonl'), 'utf8');
+    const entries = content.trim().split('\n').map(line => JSON.parse(line));
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'cardAction', event: 'received', cmd, traceId: 'click-trace' }),
+      expect.objectContaining({ phase: 'cardAction', event: 'enqueued', cmd, scope: 'oc_group', busy: false, queued: 1, traceId: 'click-trace' }),
+    ]));
+    expect(content).not.toContain(token);
+    expect(content).not.toContain('SECRET_PROMPT_CONTENT');
+    expect(h.pending.cancel('oc_group')).toHaveLength(1);
+    await closeLogger();
+  });
+
+  it.each(['prompt.test', 'prompt.diff', 'prompt.custom'])('忙碌话题的 %s 提示排队，其他空闲话题提示已发起', async (cmd) => {
+    const h = await createHarness({ chatMode: 'topic' });
+    h.channel.rawThreadIds.set('om_card', 'th_topic');
+    const run = h.agent.run({ runId: 'busy-run', prompt: '当前任务' });
+    h.activeRuns.register('oc_group:th_topic', run);
+    h.pending.block('oc_group:th_topic');
+    const value = cmd === 'prompt.custom'
+      ? { cmd, terminal_action_token: h.terminalActionAuth.sign({ chatId: 'oc_group', scope: 'oc_group:th_topic', prompt: '查看差异表' }) }
+      : { cmd };
+    expect(await h.dispatch(value)).toEqual({ toast: { type: 'info', content: '已加入待执行队列' } });
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(1);
+    // 会话占用先于活动运行注册；准备阶段也必须提示排队。
+    h.activeRuns.unregister('oc_group:th_topic', run);
+    expect(await h.dispatch(value)).toEqual({ toast: { type: 'info', content: '已加入待执行队列' } });
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(1);
+
+    h.channel.rawThreadIds.set('om_idle_card', 'th_idle');
+    expect(await h.dispatch({ cmd: 'prompt.diff' }, undefined, { messageId: 'om_idle_card' })).toEqual({
+      toast: { type: 'info', content: '已发起，准备处理' },
+    });
+    expect(h.pending.cancel('oc_group:th_idle')).toHaveLength(1);
   });
 
   it.each(['group', 'p2p'] as const)('真实 SDK 对无权使用的 %s 终态动作返回拒绝 Toast', async (chatMode) => {
@@ -245,11 +298,11 @@ describe('signed card callback dispatch', () => {
       action: { tag: 'button', value: { cmd: 'prompt.custom', terminal_action_token: token } },
     });
     expect(await click('platform-delivery-1')).toEqual({
-      toast: { type: 'info', content: '已加入待执行队列' },
+      toast: { type: 'info', content: '已发起，准备处理' },
     });
     await click('platform-delivery-1');
     expect(await click('platform-delivery-2')).toEqual({
-      toast: { type: 'info', content: '已加入待执行队列' },
+      toast: { type: 'info', content: '已发起，准备处理' },
     });
 
     const queued = h.pending.cancel('oc_group');
@@ -417,7 +470,7 @@ describe('signed card callback dispatch', () => {
     expect(await ingress.click({
       token: 'valid-no-thread',
       action: { tag: 'button', value: { cmd: 'prompt.test' } },
-    })).toEqual({ toast: { type: 'info', content: '已加入待执行队列' } });
+    })).toEqual({ toast: { type: 'info', content: '已发起，准备处理' } });
     expect(h.pending.cancel('oc_group:th_topic')).toEqual([]);
     expect(h.pending.cancel('oc_group').map((msg) => msg.content)).toEqual([
       '运行当前项目的单元测试并报告结果',
