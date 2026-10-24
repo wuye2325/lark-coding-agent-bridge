@@ -270,7 +270,7 @@ describe('signed card callback dispatch', () => {
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 
-  it('真实 SDK 队列拒绝提示词时返回失败 Toast', async () => {
+  it('真实 SDK 队列拒绝旧式与动态提示词动作时都返回失败 Toast', async () => {
     const h = await createHarness();
     h.pending.push = () => { throw new Error('queue unavailable'); };
     const ingress = await createSdkCardIngress((evt) =>
@@ -278,10 +278,18 @@ describe('signed card callback dispatch', () => {
     );
     cleanups.push(() => ingress.channel.disconnect());
 
+    const expected = { toast: { type: 'warning', content: '加入待执行队列失败，请稍后重试' } };
     expect(await ingress.click({
-      token: 'queue-failure',
+      token: 'queue-failure-fixed',
       action: { tag: 'button', value: { cmd: 'prompt.test' } },
-    })).toEqual({ toast: { type: 'warning', content: '加入待执行队列失败，请稍后重试' } });
+    })).toEqual(expected);
+    const terminalActionToken = h.terminalActionAuth.sign({
+      chatId: 'oc_group', scope: 'oc_group', prompt: '继续处理当前结果文件',
+    });
+    expect(await ingress.click({
+      token: 'queue-failure-dynamic',
+      action: { tag: 'button', value: { cmd: 'prompt.custom', terminal_action_token: terminalActionToken } },
+    })).toEqual(expected);
     expect(h.pending.cancel('oc_group')).toEqual([]);
   });
 

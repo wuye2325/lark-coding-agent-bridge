@@ -1134,6 +1134,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
+  const terminalActionsMode = getTerminalActionsMode(controls.cfg);
   const cotMessages = getCotMessages(controls.cfg);
   const cotEnabled = cotMessages !== 'off';
 
@@ -1175,7 +1176,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const runTiming: { durationMs?: number } = {};
   const renderOptionsForState = (state: RunState): RunCardRenderOptions => ({
     ...cardRenderOptions,
-    terminalActionsMode: getTerminalActionsMode(controls.cfg),
+    terminalActionsMode,
     ...(terminalActionDeclaration ? { terminalActions: terminalActionDeclaration } : {}),
     cwd,
     agentName: controls.profileConfig.agentKind === 'claude' ? '🤖 Claude Code' : '🤖 Codex',

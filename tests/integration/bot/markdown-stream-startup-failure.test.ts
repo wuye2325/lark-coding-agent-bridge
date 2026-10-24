@@ -615,6 +615,8 @@ describe('CoT 与最终结果卡片联动', () => {
     const registry = new CallbackRegistryStore(join(h.tmp.profile, 'callback-registry.json'));
     cleanups.push(() => registry.close());
     const actionPrompt = `提取 ${join(h.tmp.workspace, '版本对比表.md')} 中的差异并发到当前会话`;
+    const firstRunStarted = deferred<void>();
+    const finishFirstRun = deferred<void>();
     let runNumber = 0;
     const agent: AgentAdapter = {
       id: 'claude',
@@ -629,8 +631,13 @@ describe('CoT 与最终结果卡片联动', () => {
           events: (async function* (): AsyncIterable<AgentEvent> {
             const token = opts.callbackToken;
             if (!token) throw new Error('测试运行未获签名 token');
-            if (thisRun === 2) await registry.declareNoTerminalActions(token);
+            if (thisRun === 3) await registry.declareNoTerminalActions(token);
             else await registry.addTerminalAction(token, { label: '提取差异', prompt: actionPrompt });
+            if (thisRun === 1) {
+              yield { type: 'text', delta: '正在整理材料' };
+              firstRunStarted.resolve(undefined);
+              await finishFirstRun.promise;
+            }
             yield { type: 'final_text', content: `最终答复 ${thisRun}` };
             yield { type: 'tool_use', id: `hidden-${thisRun}`, name: 'Bash', input: { command: 'secret command' } };
             yield { type: 'tool_result', id: `hidden-${thisRun}`, output: 'secret output', isError: false };
@@ -648,6 +655,9 @@ describe('CoT 与最终结果卡片联动', () => {
       return { card: content?.card, json: JSON.stringify(content?.card) };
     };
     await h.channel.handlers.message?.(message('om_action_dynamic', '制作版本对比表'));
+    await firstRunStarted.promise;
+    h.controls.cfg.preferences = { ...(h.controls.cfg.preferences ?? {}), terminalActions: 'off' };
+    finishFirstRun.resolve(undefined);
     await waitFor(() => h.channel.sent.length >= 1);
     const first = await readSentCard(1);
     expect(first.json).toContain('最终答复 1');
@@ -659,14 +669,14 @@ describe('CoT 与最终结果卡片联动', () => {
       String(firstValues[0]?.terminal_action_token), { chatId: 'oc_dm', scope: 'oc_dm' },
     )).toEqual({ ok: true, prompt: actionPrompt });
 
-    await h.channel.handlers.message?.(message('om_action_none', '无需后续动作'));
+    await h.channel.handlers.message?.(message('om_action_off', '关闭后续动作'));
     await waitFor(() => h.channel.sent.length >= 2);
     const second = await readSentCard(2);
     expect(second.json).toContain('最终答复 2');
     expect(second.json).not.toContain('prompt.custom');
 
-    h.controls.cfg.preferences = { ...(h.controls.cfg.preferences ?? {}), terminalActions: 'off' };
-    await h.channel.handlers.message?.(message('om_action_off', '关闭动作设置生效'));
+    h.controls.cfg.preferences = { ...(h.controls.cfg.preferences ?? {}), terminalActions: 'auto' };
+    await h.channel.handlers.message?.(message('om_action_none', '无需后续动作'));
     await waitFor(() => h.channel.sent.length >= 3);
     const third = await readSentCard(3);
     expect(third.json).toContain('最终答复 3');
