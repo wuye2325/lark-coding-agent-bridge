@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../agent/types';
 import type { CallbackRegistryStore, CallbackRunContext } from '../card/callback-registry';
+import type { TerminalActionDeclaration } from '../card/terminal-actions';
 import { ActiveRuns, type RunHandle } from '../bot/active-runs';
 import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
@@ -47,6 +48,7 @@ export interface RunExecution {
   handle: RunHandle;
   subscribe(): AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
+  getTerminalActions(): Promise<TerminalActionDeclaration | undefined>;
 }
 
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
@@ -269,6 +271,19 @@ export class RunExecutor {
       progressTimer.unref();
     };
     const agent = this.agent;
+    let terminalActionsCaptured = false;
+    let terminalActionDeclaration: TerminalActionDeclaration | undefined;
+    const captureTerminalActions = async (): Promise<void> => {
+      if (terminalActionsCaptured) return;
+      terminalActionsCaptured = true;
+      if (!this.callbackRegistry || !runOptions.callbackToken) return;
+      try {
+        terminalActionDeclaration = await this.callbackRegistry.getTerminalActions(runOptions.callbackToken);
+      } catch (err) {
+        log.fail('terminal-action', err, { ...dimensions, step: 'snapshot-run-declaration' });
+        terminalActionDeclaration = { actions: [] };
+      }
+    };
     const recoveredEvents = async function* (): AsyncGenerator<AgentEvent> {
       let retried = false;
       while (true) {
@@ -323,6 +338,7 @@ export class RunExecutor {
     });
     const progressEvents = async function* (): AsyncGenerator<AgentEvent> {
       for await (const event of observed) {
+        if (event.type === 'done') await captureTerminalActions();
         if (isProgressEvent(event)) armProgress();
         if (isTerminalEvent(event) && progressTimer) clearTimeout(progressTimer);
         yield event;
@@ -333,6 +349,9 @@ export class RunExecutor {
     return {
       runId, scopeId: input.scopeId, run: managedRun, handle,
       subscribe: () => fanout.subscribe(),
+      getTerminalActions: async () => terminalActionDeclaration
+        ? { actions: terminalActionDeclaration.actions.map(({ label, prompt }) => ({ label, prompt })) }
+        : undefined,
       stop: async () => {
         handle.interrupted = true;
         await stop();

@@ -1,26 +1,75 @@
-const ACTIONS = [
-  { label: '运行单测', command: 'prompt.test', type: 'primary' },
-  { label: '查看 Diff', command: 'prompt.diff', type: 'default' },
-  { label: '新会话', command: 'session.new', type: 'default' },
-] as const;
+export interface TerminalAction {
+  label: string;
+  prompt: string;
+}
 
-export function terminalActionElements(): object[] {
+export interface TerminalActionDeclaration {
+  actions: TerminalAction[];
+}
+
+const INTERNAL_PROMPT_MARKERS = /<\s*\/?\s*bridge_[a-z0-9_-]+\b|<\s*\/?\s*(?:quoted_message|interactive_card|user_message)\b|\b__bridge_[a-z0-9_]+\b|\bbridge_token\b/i;
+
+export function validateTerminalAction(value: unknown): TerminalAction {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('动作数据格式无效');
+  }
+  const input = value as Record<string, unknown>;
+  if (typeof input.label !== 'string' || !input.label.trim()) {
+    throw new Error('动作名称不能为空');
+  }
+  const label = input.label.trim();
+  if (Array.from(label).length > 12) throw new Error('动作名称不得超过 12 个字符');
+  if (typeof input.prompt !== 'string' || !input.prompt.trim()) {
+    throw new Error('动作 prompt 不能为空');
+  }
+  const prompt = input.prompt.trim();
+  if (Array.from(prompt).length > 500) throw new Error('动作 prompt 不得超过 500 个字符');
+  if (INTERNAL_PROMPT_MARKERS.test(prompt)) throw new Error('动作 prompt 不得包含 Bridge 内部标记');
+  return { label, prompt };
+}
+
+export function terminalActionElements(
+  declaration: TerminalActionDeclaration | undefined,
+  signTerminalAction: ((prompt: string) => string) | undefined,
+): object[] {
+  if (!declaration || declaration.actions.length === 0 || !signTerminalAction) return [];
+
+  const seenLabels = new Set<string>();
+  const actions = declaration.actions.flatMap((untrusted) => {
+    let action: TerminalAction;
+    try {
+      action = validateTerminalAction(untrusted);
+    } catch {
+      return [];
+    }
+    if (seenLabels.has(action.label)) return [];
+    seenLabels.add(action.label);
+    return [action];
+  }).slice(0, 3);
+  if (actions.length === 0) return [];
+
   return [
     {
       tag: 'column_set',
       flex_mode: 'flow',
       horizontal_spacing: 'small',
-      columns: ACTIONS.map(({ label, command, type }) => ({
+      columns: actions.map(({ label, prompt }) => ({
         tag: 'column',
         width: 'auto',
         elements: [{
           tag: 'button',
           text: { tag: 'plain_text', content: label },
-          type,
-          behaviors: [{ type: 'callback', value: { cmd: command } }],
+          type: 'default',
+          behaviors: [{
+            type: 'callback',
+            value: {
+              cmd: 'prompt.custom',
+              terminal_action_token: signTerminalAction(prompt),
+            },
+          }],
         }],
       })),
     },
-    { tag: 'markdown', content: '💡 快捷按钮将在当前会话中执行', text_size: 'notation' },
+    { tag: 'markdown', content: '💡 快捷按钮将在当前会话与工作区继续执行', text_size: 'notation' },
   ];
 }

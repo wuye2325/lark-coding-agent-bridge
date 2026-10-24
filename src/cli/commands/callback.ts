@@ -4,7 +4,7 @@ import { CallbackRegistryStore } from '../../card/callback-registry';
 import { resolveAppPaths } from '../../config/app-paths';
 
 export async function runCallbackCreate(opts: { schema: string; action?: string; ttlSeconds?: string }): Promise<void> {
-  const { store, token } = callbackContext();
+  const { store, token } = activeRunContext();
   const text = await readFile(opts.schema, 'utf8');
   if (Buffer.byteLength(text) > 16384) throw new Error('callback schema 不得超过 16 KiB');
   const registration = await store.register(token, {
@@ -20,12 +20,12 @@ export async function runCallbackCreate(opts: { schema: string; action?: string;
 }
 
 export async function runCallbackBind(opts: { id: string; messageId: string }): Promise<void> {
-  const { store, token } = callbackContext();
+  const { store, token } = activeRunContext();
   await store.bind(token, opts.id, opts.messageId);
   process.stdout.write(`${JSON.stringify({ callback_id: opts.id, message_id: opts.messageId })}\n`);
 }
 
-function callbackContext(): { store: CallbackRegistryStore; token: string } {
+export function activeRunContext(): { store: CallbackRegistryStore; token: string } {
   const token = requiredEnv('LARK_CHANNEL_CALLBACK_TOKEN');
   const paths = resolveAppPaths({ rootDir: requiredEnv('LARK_CHANNEL_HOME'), profile: requiredEnv('LARK_CHANNEL_PROFILE') });
   return { store: new CallbackRegistryStore(join(paths.profileDir, 'callback-registry.json')), token };
@@ -33,6 +33,6 @@ function callbackContext(): { store: CallbackRegistryStore; token: string } {
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} 缺失，callback 命令仅可在活动 agent run 中执行`);
+  if (!value) throw new Error(`${name} 缺失，Bridge CLI 命令仅可在活动 agent run 中执行`);
   return value;
 }

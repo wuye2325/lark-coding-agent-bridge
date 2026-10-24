@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import { initialState, reduce } from '../../../src/card/run-state';
+import { CallbackRegistryStore } from '../../../src/card/callback-registry';
 import { renderText } from '../../../src/card/text-renderer';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { RunRejected, SpawnFailed } from '../../../src/runtime/errors';
@@ -67,6 +71,67 @@ describe('RunExecutor', () => {
     expect(h.agent.runs).toHaveLength(1);
     expect(rendererEvents).toEqual(events);
     expect(sessionEvents).toEqual(events);
+  });
+
+  it('done 事件先固化动作声明，run 清理后仍可渲染且 registry 已清理', async () => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-actions-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({
+      events: [{ type: 'done', terminationReason: 'normal' }],
+      callbackRegistry,
+    });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-action',
+      policy: policy(h.tmp.workspace),
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    expect(token).toBeTruthy();
+    await callbackRegistry.addTerminalAction(token!, {
+      label: '导出 Word', prompt: '导出 /matter/client@example.com/报告.docx 并发到当前会话',
+    });
+
+    await collect(execution.subscribe());
+
+    expect(await execution.getTerminalActions()).toEqual({
+      actions: [{ label: '导出 Word', prompt: '导出 /matter/client@example.com/报告.docx 并发到当前会话' }],
+    });
+    const state = JSON.parse(await readFile(registryPath, 'utf8')) as {
+      terminalActions: Record<string, unknown>;
+    };
+    expect(state.terminalActions).toEqual({});
+    await callbackRegistry.close();
+  });
+
+  it.each([
+    ['failed', [{ type: 'error', message: 'agent failed', terminationReason: 'failed' }], false],
+    ['interrupted', [], true],
+  ] as const)('%s 结束路径都会清理本轮动作声明', async (_name, events, stop) => {
+    const registryDirectory = await mkdtemp(join(tmpdir(), 'run-executor-action-cleanup-'));
+    const registryPath = join(registryDirectory, 'callback-registry.json');
+    cleanups.push(async () => { await rm(registryDirectory, { recursive: true, force: true }); });
+    const callbackRegistry = new CallbackRegistryStore(registryPath);
+    const h = await createHarness({ events, callbackRegistry });
+    const execution = await h.executor.submit({
+      scopeId: 'scope-action-cleanup',
+      policy: policy(h.tmp.workspace),
+      callbackContext: { chatId: 'oc_chat', operatorOpenId: 'ou_user', agentId: 'claude' },
+    });
+    const token = h.agent.runOptions[0]?.callbackToken;
+    expect(token).toBeTruthy();
+    await callbackRegistry.addTerminalAction(token!, { label: '下一步', prompt: '继续处理当前文件' });
+
+    if (stop) await execution.stop();
+    else await collect(execution.subscribe());
+
+    expect(await execution.getTerminalActions()).toBeUndefined();
+    const state = JSON.parse(await readFile(registryPath, 'utf8')) as {
+      terminalActions: Record<string, unknown>;
+    };
+    expect(state.terminalActions).toEqual({});
+    await callbackRegistry.close();
   });
 
   it('fast-fails nowait when the pool is full and queues normal submissions FIFO', async () => {
@@ -346,6 +411,7 @@ async function createHarness(options: {
   waitForExit?: boolean | readonly boolean[];
   poolCap?: number;
   agent?: AgentAdapter;
+  callbackRegistry?: CallbackRegistryStore;
 }): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
@@ -373,6 +439,7 @@ async function createHarness(options: {
       agent,
       pool,
       activeRuns,
+      callbackRegistry: options.callbackRegistry,
       createRunId: () => `run-${nextRun++}`,
       now: () => 1000,
       postDoneExitGraceMs: 10,

@@ -17,6 +17,7 @@ export interface ConfigFormOpts {
   reasoningEffort: string;
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
+  terminalActionsMode?: 'auto' | 'off';
   cotMessages: CotMessagesMode;
   maxConcurrentRuns: number;
   /** 0 means "disabled". */
@@ -233,6 +234,21 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
+                '\n**卡片后续动作**\n' +
+                '_自动：显示适用的后续操作；关闭：不显示后续操作按钮_',
+            },
+            {
+              tag: 'select_static',
+              name: 'terminal_actions',
+              initial_option: opts.terminalActionsMode ?? 'auto',
+              options: [
+                { text: { tag: 'plain_text', content: '自动' }, value: 'auto' },
+                { text: { tag: 'plain_text', content: '关闭' }, value: 'off' },
+              ],
+            },
+            {
+              tag: 'markdown',
+              content:
                 '\n**COT 过程消息**\n' +
                 '_关闭:只发送最终回复_\n' +
                 '_简略:展示 agent 过程文本和工具摘要_\n' +
@@ -380,6 +396,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             effortLine +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
+            `**卡片后续动作**:\`${(opts.terminalActionsMode ?? 'auto') === 'auto' ? '自动' : '关闭'}\`\n` +
             `**COT 过程消息**:\`${cotLabel}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +

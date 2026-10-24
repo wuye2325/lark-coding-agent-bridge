@@ -40,6 +40,7 @@ import {
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getTerminalActionsMode,
 } from '../config/schema';
 import type {
   LarkCliIdentityPreset,
@@ -1762,6 +1763,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     ),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
+    terminalActionsMode: getTerminalActionsMode(ctx.controls.cfg),
     cotMessages: getCotMessages(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
@@ -1814,6 +1816,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       : getMessageReplyMode(ctx.controls.cfg);
   const rawTools = String(fv.show_tool_calls ?? '').trim();
   const showToolCalls = rawTools !== 'hide';
+  const rawTerminalActions = String(fv.terminal_actions ?? '').trim();
+  const terminalActionsMode = rawTerminalActions === 'auto' || rawTerminalActions === 'off'
+    ? rawTerminalActions
+    : getTerminalActionsMode(ctx.controls.cfg);
   // Parse the model picker. Unexpected / empty values keep the current
   // selection. Store `undefined` for the "default" sentinel to keep config
   // tidy (resolveModelArg treats both the same way).
@@ -1925,6 +1931,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       // explicitly picks any option gets out of the legacy-coerce path.
       messageReplyMigrated: true,
       showToolCalls,
+      terminalActions: terminalActionsMode,
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
@@ -1991,6 +1998,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         reasoningEffort: reasoningEffortSelection,
         messageReply,
         showToolCalls,
+        terminalActionsMode,
         cotMessages,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,

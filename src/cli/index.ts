@@ -25,6 +25,7 @@ import {
 } from './commands/service';
 import { runStart } from './commands/start';
 import { runCallbackBind, runCallbackCreate } from './commands/callback';
+import { runActionAdd, runActionNone } from './commands/action';
 import { runUi } from './commands/ui';
 
 const program = new Command();
@@ -237,6 +238,18 @@ callback.command('bind')
   .requiredOption('--id <id>', 'callback create 返回的 callback_id')
   .requiredOption('--message-id <id>', '发卡回执中的 message_id')
   .action(runCallbackBind);
+
+const action = program.command('action').description('声明当前 agent run 的终态快捷动作');
+
+action.command('add')
+  .description('登记一个点击后发送到当前会话的预设 prompt')
+  .requiredOption('--label <label>', '卡片按钮名称，最多 12 个字符')
+  .requiredOption('--prompt <prompt>', '点击后发送的 prompt，最多 500 个字符')
+  .action(runActionAdd);
+
+action.command('none')
+  .description('明确声明本轮无需终态快捷动作')
+  .action(runActionNone);
 
 const secrets = program
   .command('secrets')
