@@ -42,3 +42,14 @@ describe('configFormCard reasoning effort picker', () => {
     expect(JSON.stringify(claude)).not.toContain('reasoning_effort');
   });
 });
+
+describe('configFormCard model picker', () => {
+  it('shows GPT-6.1 Terra for Codex profiles', () => {
+    const codex = JSON.stringify(configFormCard({ ...base, agentKind: 'codex' }));
+    expect(codex).toContain('GPT-6.1 Terra');
+    expect(codex).toContain('gpt-6.1-terra');
+
+    const claude = JSON.stringify(configFormCard(base));
+    expect(claude).not.toContain('gpt-6.1-terra');
+  });
+});

@@ -891,6 +891,7 @@ interface RunBatchDeps {
   lastRunModelByScope: Map<string, string>;
   scope: string;
   mode: ChatMode;
+  emptyResumeRetryAttempted?: boolean;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -916,6 +917,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const lastMsg = batch[batch.length - 1];
   if (!firstMsg || !lastMsg) return;
   let runTopic = extractRunTopic(batch);
+  const emptyResumeRetryAttempted = deps.emptyResumeRetryAttempted === true;
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
@@ -1201,13 +1203,44 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(getShowToolCalls(controls.cfg) ? { firstToolError: firstToolErrorFromState(state) } : {}),
   });
 
+  const retryEmptyResumedRun = async (state: RunState): Promise<boolean> => {
+    if (
+      emptyResumeRetryAttempted ||
+      capability.agentId !== 'claude' ||
+      !flow.resumeFrom ||
+      state.terminal !== 'done' ||
+      state.finalText?.trim() ||
+      state.blocks.length > 0 ||
+      state.reasoning.content.trim()
+    ) {
+      return false;
+    }
+    log.warn('run', 'empty-resume-retry', { scope });
+    try {
+      // Claude may finish a resumed turn while settling work left open by /stop.
+      const exited = await execution.run.waitForExit(2500);
+      if (!exited) await execution.stop();
+    } catch (err) {
+      log.warn('run', 'empty-resume-retry-wait-failed', {
+        scope,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+    await runAgentBatch({ ...deps, emptyResumeRetryAttempted: true });
+    return true;
+  };
+
   // For non-card modes Claude's output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
   // Add a "Typing" reaction to the triggering message as an instant ack, but
   // never let that outbound API call block agent event draining.
   // 表情事件已在入队时回执，撤回也不能因运行启动而追加 Typing。
   const reactionPromise =
-    cotEnabled || replyMode === 'card' || lastMsg.rawContentType === 'reaction'
+    emptyResumeRetryAttempted ||
+    cotEnabled ||
+    replyMode === 'card' ||
+    lastMsg.rawContentType === 'reaction'
       ? undefined
       : addWorkingReaction(channel, lastMsg.messageId);
 
@@ -1253,6 +1286,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             reason: cotPublisher.degradedReason,
           });
         }
+        if (await retryEmptyResumedRun(finalState)) return;
         await sendFinalReply({
           channel,
           chatId,
@@ -1272,6 +1306,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       let latestState: RunState = initialState;
       let producerStarted = false;
       let progressStreamFailed = false;
+      let retriedEmptyResume = false;
       let cardCtrl:
         | { update(next: object | ((current: object) => object)): Promise<void> }
         | undefined;
@@ -1320,6 +1355,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           renderDone,
           producerStarted: () => producerStarted,
           fallback: async (state) => {
+            if (await retryEmptyResumedRun(state)) {
+              retriedEmptyResume = true;
+              return;
+            }
             if (controls.profileConfig.agentKind === 'codex') return;
             await sendFinalReply({
               channel,
@@ -1337,6 +1376,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         progressStreamFailed = true;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
+      if (retriedEmptyResume) return;
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
       if (
         controls.profileConfig.agentKind === 'codex' &&
@@ -1405,6 +1445,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
+      if (await retryEmptyResumedRun(latestState)) return;
       await sendFinalReply({
         channel,
         chatId,
@@ -1431,6 +1472,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       );
       await loadTerminalActionDeclaration(finalState);
       await loadRunTopic(finalState);
+      if (await retryEmptyResumedRun(finalState)) return;
       await sendFinalReply({
         channel,
         chatId,

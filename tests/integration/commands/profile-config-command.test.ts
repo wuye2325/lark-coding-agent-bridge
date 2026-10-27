@@ -139,6 +139,25 @@ describe('profile-aware account and config commands', () => {
     expect(cleared.profiles.claude?.preferences.model).toBeUndefined();
   });
 
+  it('shows and saves GPT-6.1 Terra for a Codex profile', async () => {
+    vi.useFakeTimers();
+    const h = await createHarness({ profile: 'codex-dev' });
+
+    await h.command('/config');
+    const form = JSON.stringify(h.channel.sent.at(-1)?.content);
+    expect(form).toContain('GPT-6.1 Terra');
+    expect(form).toContain('gpt-6.1-terra');
+
+    await h.command('/config submit', {
+      model: 'gpt-6.1-terra',
+      message_reply: 'text',
+    });
+    const root = await waitForRoot(h.rootDir, (candidate) =>
+      candidate.profiles['codex-dev']?.preferences.model === 'gpt-6.1-terra',
+    );
+    expect(root.profiles['codex-dev']?.preferences.model).toBe('gpt-6.1-terra');
+  });
+
   it('keeps the current message reply mode when the config submit payload omits it', async () => {
     vi.useFakeTimers();
     const h = await createHarness({
@@ -269,6 +288,7 @@ describe('profile-aware account and config commands', () => {
 });
 
 async function createHarness(options: {
+  profile?: 'claude' | 'codex-dev';
   preferences?: RootConfig['profiles'][string]['preferences'];
 } = {}): Promise<{
   rootDir: string;
@@ -280,14 +300,15 @@ async function createHarness(options: {
   roots.push(rootDir);
   const workspace = join(rootDir, 'workspace');
   await mkdir(workspace, { recursive: true });
-  const root = await writeRoot(rootDir, workspace, options.preferences);
-  const profileConfig = root.profiles.claude!;
-  const appPaths = resolveAppPaths({ rootDir, profile: 'claude' });
+  const profile = options.profile ?? 'claude';
+  const root = await writeRoot(rootDir, workspace, options.preferences, profile);
+  const profileConfig = root.profiles[profile]!;
+  const appPaths = resolveAppPaths({ rootDir, profile });
   const channel = createFakeChannel();
   const sessions = new SessionStore(appPaths.sessionsFile);
   const workspaces = new WorkspaceStore(appPaths.workspacesFile);
   const controls = {
-    profile: 'claude',
+    profile,
     profileConfig,
     botOwnerId: 'ou-admin',
     ownerRefreshState: 'ok',
@@ -295,7 +316,7 @@ async function createHarness(options: {
     restart: vi.fn(async () => {}),
     exit: vi.fn(async () => {}),
     configPath: appPaths.configFile,
-    cfg: runtimeProfileConfig(root, 'claude'),
+    cfg: runtimeProfileConfig(root, profile),
     processId: 'proc-1',
   } satisfies Controls;
 
@@ -324,10 +345,11 @@ async function writeRoot(
   rootDir: string,
   workspace: string,
   preferences: RootConfig['profiles'][string]['preferences'] = {},
+  activeProfile: 'claude' | 'codex-dev' = 'claude',
 ): Promise<RootConfig> {
   const root: RootConfig = {
     schemaVersion: 2,
-    activeProfile: 'claude',
+    activeProfile,
     preferences: {},
     profiles: {
       claude: createDefaultProfileConfig({
@@ -347,12 +369,13 @@ async function writeRoot(
     },
   };
   root.profiles.claude!.workspaces.default = workspace;
-  root.profiles.claude!.preferences = {
-    ...root.profiles.claude!.preferences,
+  root.profiles['codex-dev']!.workspaces.default = workspace;
+  root.profiles[activeProfile]!.preferences = {
+    ...root.profiles[activeProfile]!.preferences,
     ...preferences,
   };
   await writeJson(resolveAppPaths({ rootDir }).configFile, root);
-  await writeFile(join(rootDir, 'active-profile'), 'claude\n', 'utf8');
+  await writeFile(join(rootDir, 'active-profile'), `${activeProfile}\n`, 'utf8');
   return root;
 }
 

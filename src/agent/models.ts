@@ -39,6 +39,7 @@ const CLAUDE_MODELS: ModelOption[] = [
 const CODEX_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
   { value: 'gpt-6.1-sol', label: 'GPT-6.1-Sol（最新主力）' },
+  { value: 'gpt-6.1-terra', label: 'GPT-6.1 Terra' },
   { value: 'gpt-6-astra', label: 'GPT-6-Astra（最强前沿）' },
   { value: 'gpt-6-sol', label: 'GPT-6-Sol' },
   { value: 'gpt-6-luna', label: 'GPT-6-Luna（快速经济）' },

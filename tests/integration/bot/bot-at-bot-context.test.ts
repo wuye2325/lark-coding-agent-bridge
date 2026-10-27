@@ -2,6 +2,7 @@ import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
@@ -32,6 +33,13 @@ interface MessageHandlerMap {
 
 interface FakeLarkChannel {
   botIdentity: { openId: string; name: string };
+  sent: Array<{ chatId: string; content: unknown; options?: unknown }>;
+  cardStreams: Array<{
+    replyTo?: string;
+    initial: unknown;
+    updates: unknown[];
+    settled: boolean;
+  }>;
   rawClient: {
     request: ReturnType<typeof vi.fn>;
     application: {
@@ -45,6 +53,7 @@ interface FakeLarkChannel {
       v1: {
         message: {
           get: ReturnType<typeof vi.fn>;
+          list: ReturnType<typeof vi.fn>;
         };
         messageReaction: {
           create: ReturnType<typeof vi.fn>;
@@ -58,7 +67,7 @@ interface FakeLarkChannel {
   disconnect(): Promise<void>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
-  send(chatId: string, content: unknown, options?: unknown): Promise<void>;
+  send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
 }
 
@@ -67,6 +76,7 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   sdkMock.channel = undefined;
   sdkMock.createLarkChannel.mockClear();
+  vi.unstubAllGlobals();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
@@ -226,6 +236,115 @@ describe('sender identity in bridge_context', () => {
   });
 });
 
+describe('stop 后立即发送新请求', () => {
+  it('新请求仍会执行并在结果卡片中返回正文', async () => {
+    const h = await createHarness();
+    h.controls.cfg.preferences.messageReply = 'card';
+    const runOptions: AgentRunOptions[] = [];
+    const runs: ControlledRun[] = [];
+    vi.spyOn(h.agent, 'run').mockImplementation((opts) => {
+      runOptions.push(opts);
+      const run = createControlledRun(opts, runs.length === 0 ? 'stopped' : 'answer');
+      runs.push(run);
+      return run;
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({ messageId: 'm-running', content: '开始长任务', threadId: 'thread-1' }),
+    );
+    await waitFor(() => runs.length === 1);
+    await waitFor(() => Boolean(h.sessions.getRaw('oc_chat:thread-1')));
+    await h.channel.handlers.message?.(
+      message({ messageId: 'm-stop', content: '/stop', threadId: 'thread-1' }),
+    );
+    expect(runs[0]?.stopped).toBe(true);
+
+    await h.channel.handlers.message?.(
+      message({ messageId: 'm-next', content: '紧接着的新请求', threadId: 'thread-1' }),
+    );
+    await waitFor(() => runs.length === 2);
+    await waitFor(() =>
+      h.channel.cardStreams.some((stream) => stream.replyTo === 'm-next' && stream.settled) ||
+      h.channel.sent.some((sent) =>
+        (sent.options as { replyTo?: string } | undefined)?.replyTo === 'm-next',
+      ),
+    );
+
+    expect(runOptions[1]?.prompt).toContain('紧接着的新请求');
+    expect(runOptions[1]?.sessionId).toBe('session-before-stop');
+    const stream = h.channel.cardStreams.find((item) => item.replyTo === 'm-next');
+    const sent = h.channel.sent.find(
+      (item) => (item.options as { replyTo?: string } | undefined)?.replyTo === 'm-next',
+    );
+    const resultCard = JSON.stringify(stream?.updates.at(-1) ?? sent?.content ?? stream?.initial);
+    expect(resultCard).toContain('后一轮正常输出');
+    expect(resultCard).not.toContain('未返回内容');
+  });
+
+  it('恢复旧 session 后若 Claude 只返回正常终态，首个请求不应变成空卡片', async () => {
+    const h = await createHarness();
+    h.controls.cfg.preferences.messageReply = 'markdown';
+    h.controls.cfg.preferences.cotMessages = 'brief';
+    let cotSequence = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith('/open-apis/auth/v3/tenant_access_token/internal')) {
+        return new Response(JSON.stringify({
+          code: 0,
+          tenant_access_token: 'test-token',
+          expire: 7200,
+        }), { status: 200 });
+      }
+      if (url.includes('/open-apis/im/v1/message_cot?receive_id_type=chat_id')) {
+        cotSequence++;
+        return new Response(JSON.stringify({
+          code: 0,
+          data: { cot_id: `cot-${cotSequence}`, message_id: `cot-message-${cotSequence}` },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 });
+    }));
+    const runOptions: AgentRunOptions[] = [];
+    const runs: ControlledRun[] = [];
+    vi.spyOn(h.agent, 'run').mockImplementation((opts) => {
+      runOptions.push(opts);
+      const outcome = (['stopped', 'empty', 'answer'] as const)[runs.length] ?? 'answer';
+      const run = createControlledRun(opts, outcome);
+      runs.push(run);
+      return run;
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({ messageId: 'm-running', content: '开始长任务', threadId: 'thread-1' }),
+    );
+    await waitFor(() => runs.length === 1);
+    await waitFor(() => Boolean(h.sessions.getRaw('oc_chat:thread-1')));
+    await h.channel.handlers.message?.(
+      message({ messageId: 'm-stop', content: '/stop', threadId: 'thread-1' }),
+    );
+    await h.channel.handlers.message?.(
+      message({ messageId: 'm-next', content: '紧接着的新请求', threadId: 'thread-1' }),
+    );
+    await waitFor(() => runs.length === 3);
+    await waitFor(() => h.channel.sent.some(
+      (sent) => (sent.options as { replyTo?: string } | undefined)?.replyTo === 'm-next',
+    ));
+
+    const nextCards = h.channel.sent.filter(
+      (sent) => (sent.options as { replyTo?: string } | undefined)?.replyTo === 'm-next',
+    );
+    expect(runOptions[1]?.sessionId).toBe('session-before-stop');
+    expect(runOptions[2]?.sessionId).toBe('session-after-stop');
+    expect(runOptions[2]?.prompt).toContain('紧接着的新请求');
+    expect(nextCards).toHaveLength(1);
+    const nextCard = JSON.stringify(nextCards[0]?.content);
+    expect(nextCard).toContain('后一轮正常输出');
+    expect(nextCard).not.toContain('未返回内容');
+  });
+});
+
 async function createHarness(): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -300,8 +419,12 @@ async function startTestBridge(h: {
 
 function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
+  const sent: FakeLarkChannel['sent'] = [];
+  const cardStreams: FakeLarkChannel['cardStreams'] = [];
   return {
     handlers,
+    sent,
+    cardStreams,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -318,6 +441,7 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
         v1: {
           message: {
             get: vi.fn(async () => ({ data: { items: [] } })),
+            list: vi.fn(async () => ({ data: { items: [] } })),
           },
           messageReaction: {
             create: vi.fn(async () => ({ data: { reaction_id: 'reaction_1' } })),
@@ -337,8 +461,27 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
     getConnectionStatus() {
       return { state: 'connected', reconnectAttempts: 0 };
     },
-    async send() {},
-    async stream(_chatId, input) {
+    async send(chatId, content, options) {
+      sent.push({ chatId, content, options });
+      return { messageId: `om_fake_${sent.length}` };
+    },
+    async stream(chatId, input, options) {
+      if (isCardStreamInput(input)) {
+        const record: FakeLarkChannel['cardStreams'][number] = {
+          replyTo: (options as { replyTo?: string } | undefined)?.replyTo,
+          initial: input.card.initial,
+          updates: [],
+          settled: false,
+        };
+        cardStreams.push(record);
+        await input.card.producer({
+          update: async (card) => {
+            record.updates.push(card);
+          },
+        });
+        record.settled = true;
+        return;
+      }
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
       }
@@ -363,6 +506,7 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
 function message(input: {
   messageId: string;
   content: string;
+  threadId?: string;
   senderId?: string;
   senderName?: string;
   rawSenderType?: string;
@@ -371,6 +515,7 @@ function message(input: {
   return {
     messageId: input.messageId,
     chatId: 'oc_chat',
+    ...(input.threadId ? { threadId: input.threadId } : {}),
     chatType: 'group',
     senderId: input.senderId ?? 'ou_user',
     senderName: input.senderName ?? 'User',
@@ -414,6 +559,75 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void
 
 interface MarkdownStreamInput {
   markdown(ctrl: { setContent(markdown: string): Promise<void> }): Promise<void> | void;
+}
+
+interface CardStreamInput {
+  card: {
+    initial: unknown;
+    producer(ctrl: { update(card: unknown): Promise<void> }): Promise<void> | void;
+  };
+}
+
+interface ControlledRun extends AgentRun {
+  readonly stopped: boolean;
+}
+
+function createControlledRun(
+  opts: AgentRunOptions,
+  outcome: 'stopped' | 'empty' | 'answer',
+): ControlledRun {
+  let stopRequested = false;
+  let resolveStopped!: () => void;
+  const stopSignal = new Promise<void>((resolve) => {
+    resolveStopped = resolve;
+  });
+  const events: AsyncIterable<AgentEvent> = outcome === 'stopped'
+    ? (async function* () {
+        yield { type: 'system', sessionId: 'session-before-stop' };
+        yield { type: 'tool_use', id: 'tool-before-stop', name: 'Bash', input: {} };
+        await stopSignal;
+      })()
+    : outcome === 'empty'
+      ? (async function* () {
+        yield { type: 'system', sessionId: 'session-after-stop' };
+        yield {
+          type: 'tool_result',
+          id: 'tool-before-stop',
+          output: 'finished after interruption',
+          isError: false,
+        };
+        yield { type: 'usage', inputTokens: 1, outputTokens: 0 };
+        yield { type: 'done', terminationReason: 'normal' };
+      })()
+      : (async function* () {
+        const response = '后一轮正常输出';
+        yield { type: 'text', delta: response };
+        yield { type: 'final_text', content: response };
+        yield { type: 'done', terminationReason: 'normal' };
+      })();
+  return {
+    runId: opts.runId,
+    events,
+    get stopped() {
+      return stopRequested;
+    },
+    async stop() {
+      stopRequested = true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      resolveStopped();
+    },
+    async waitForExit() {
+      return true;
+    },
+  };
+}
+
+function isCardStreamInput(input: unknown): input is CardStreamInput {
+  return Boolean(
+    input && typeof input === 'object' && 'card' in input &&
+    input.card && typeof input.card === 'object' && 'producer' in input.card &&
+    typeof input.card.producer === 'function',
+  );
 }
 
 function isMarkdownStreamInput(input: unknown): input is MarkdownStreamInput {
