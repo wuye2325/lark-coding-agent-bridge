@@ -9,12 +9,15 @@ import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
 import {
   buildAgentPrompt,
+  buildSlashCommandPrompt,
+  type AgentPromptBundle,
   type BridgePromptInteractiveCard,
   type BridgePromptMention,
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
 } from '../agent/prompt';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
+import type { AgentKind } from '../config/profile-schema';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
@@ -1007,16 +1010,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ]
     : undefined;
 
-  const prompt = buildPrompt(
+  const builtPrompt = buildPrompt(
     batch,
     attachments,
     quotes,
     topicContext,
     channel.botIdentity,
     extraInstructions,
+    agentKind,
   );
+  const { prompt, appendSystemPrompt } = builtPrompt;
   log.info('prompt', 'built', {
     promptChars: prompt.length,
+    promptMode: appendSystemPrompt ? 'slash-command' : 'text',
     quotes: quotes.length,
     topicContext: topicContext.length,
     ...(modelSwitched ? { modelSwitchedTo: modelSelection } : {}),
@@ -1069,6 +1075,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       await channel.send(chatId, { markdown: message }, sendOpts);
     },
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
     observability: {
       profile: controls.profile,
       agent: capability.agentId,
@@ -2040,16 +2047,17 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildPrompt(
+export function buildPrompt(
   batch: NormalizedMessage[],
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
   topicContext: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
-): string {
+  agentKind?: AgentKind,
+): AgentPromptBundle {
   const first = batch[0];
-  if (!first) return '';
+  if (!first) return { prompt: '' };
 
   const fileKeys = batch.flatMap((m) => m.resources.map((r) => r.fileKey));
   // When the debounce window merged messages (possibly from several senders —
@@ -2073,29 +2081,79 @@ function buildPrompt(
   const senderType = senderTypeOf(first);
   const mentions = mergeMentions(batch);
 
-  return buildAgentPrompt({
-    context: {
-      chatId: first.chatId,
-      chatType: first.chatType,
-      senderId: first.senderId,
-      ...(first.senderName ? { senderName: first.senderName } : {}),
-      ...(senderType ? { senderType } : {}),
-      ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
-      ...(mentions.length > 0 ? { mentions } : {}),
-      ...(first.threadId ? { threadId: first.threadId } : {}),
-      messageIds: batch.map((m) => m.messageId),
-      source: 'im',
-    },
-    instructions:
-      extraInstructions && extraInstructions.length > 0
-        ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
-        : BRIDGE_AGENT_INSTRUCTIONS,
-    userInput: userPart,
-    ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
-    quotedMessages: quotes.map(toPromptQuote),
-    interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
-    attachments: attachments.map(toPromptAttachment),
+  const context = {
+    chatId: first.chatId,
+    chatType: first.chatType,
+    senderId: first.senderId,
+    ...(first.senderName ? { senderName: first.senderName } : {}),
+    ...(senderType ? { senderType } : {}),
+    ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
+    ...(mentions.length > 0 ? { mentions } : {}),
+    ...(first.threadId ? { threadId: first.threadId } : {}),
+    messageIds: batch.map((m) => m.messageId),
+    source: 'im' as const,
+  };
+  const instructions =
+    extraInstructions && extraInstructions.length > 0
+      ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
+      : BRIDGE_AGENT_INSTRUCTIONS;
+
+  const slashCommand = resolveSlashCommand({
+    batch,
+    attachments,
+    quotes,
+    topicContext,
+    agentKind,
+    senderType,
+    userPart,
   });
+  if (slashCommand) {
+    return buildSlashCommandPrompt({ command: slashCommand, context, instructions });
+  }
+
+  return {
+    prompt: buildAgentPrompt({
+      context,
+      instructions,
+      userInput: userPart,
+      ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
+      quotedMessages: quotes.map(toPromptQuote),
+      interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
+      attachments: attachments.map(toPromptAttachment),
+    }),
+  };
+}
+
+/** The CLI expands slash commands only when the prompt starts with `/`. */
+const SLASH_COMMAND_RE = /^\/[A-Za-z0-9][\w:-]*(?:\s|$)/;
+
+function resolveSlashCommand(input: {
+  batch: NormalizedMessage[];
+  attachments: LocalAttachment[];
+  quotes: QuotedContext[];
+  topicContext: QuotedContext[];
+  agentKind?: AgentKind;
+  senderType: 'user' | 'bot' | undefined;
+  userPart: string;
+}): string | undefined {
+  const first = input.batch[0];
+  if (!first) return undefined;
+  // Codex has no separate system-prompt channel, so passthrough would drop
+  // context without enabling expansion. Only Claude is supported.
+  if (input.agentKind !== 'claude') return undefined;
+  // Bot-authored messages and card payloads are not user-typed commands.
+  // Feishu reports bot senders as `app`, so use senderTypeOf's mapping rather
+  // than NormalizedMessage.senderIsBot (which only matches the literal `bot`).
+  if (input.senderType === 'bot') return undefined;
+  if (first.rawContentType === 'interactive') return undefined;
+  // Merged batches, quotes, topic history, and attachments all need the
+  // structured prompt; the command would no longer be the whole input.
+  if (input.batch.length !== 1) return undefined;
+  if (input.attachments.length > 0 || input.quotes.length > 0 || input.topicContext.length > 0) {
+    return undefined;
+  }
+  const command = input.userPart.trim();
+  return SLASH_COMMAND_RE.test(command) ? command : undefined;
 }
 
 /**

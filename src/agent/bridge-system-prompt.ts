@@ -6,7 +6,7 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 
 ## bridge_context
 
-每条 user message 顶部会带一个 \`<bridge_context>\` 块：
+每条普通消息的 user message 顶部会带一个 \`<bridge_context>\` 块；当 user message 本身是斜杠命令（以 \`/\` 开头）时，CLI 会先展开该命令，这个块改由系统提示提供：
 
 \`\`\`
 <bridge_context>

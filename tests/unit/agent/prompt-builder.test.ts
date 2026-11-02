@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildAgentPrompt } from '../../../src/agent/prompt';
+import { buildAgentPrompt, buildSlashCommandPrompt } from '../../../src/agent/prompt';
 
 describe('agent prompt builder', () => {
   it('serializes untrusted message, quote, card, and comment text without closing bridge tags', () => {
@@ -97,6 +97,39 @@ describe('agent prompt builder', () => {
     expect(prompt).not.toContain('<quoted_messages>');
     expect(prompt).not.toContain('<interactive_cards>');
     expect(prompt).not.toContain('<comment_context>');
+  });
+
+  it('keeps the slash command verbatim and moves context into the system prompt', () => {
+    const bundle = buildSlashCommandPrompt({
+      command: '/implement 修复登录问题',
+      context: {
+        chatId: 'oc_dm',
+        chatType: 'p2p',
+        senderId: 'ou_owner',
+        source: 'im',
+      },
+      instructions: ['保持在当前 profile 内'],
+    });
+
+    expect(bundle.prompt).toBe('/implement 修复登录问题');
+    expect(bundle.prompt.startsWith('/')).toBe(true);
+    expect(bundle.appendSystemPrompt).toContain('斜杠命令');
+    expect(readSection(bundle.appendSystemPrompt ?? '', 'bridge_context')).toMatchObject({
+      chatId: 'oc_dm',
+      source: 'im',
+    });
+    expect(readSection(bundle.appendSystemPrompt ?? '', 'bridge_instructions')).toEqual([
+      '保持在当前 profile 内',
+    ]);
+  });
+
+  it('omits the instructions section for slash prompts without extra instructions', () => {
+    const bundle = buildSlashCommandPrompt({
+      command: '/tdd',
+      context: { chatId: 'oc_dm', chatType: 'p2p', senderId: 'ou_owner', source: 'im' },
+    });
+
+    expect(bundle.appendSystemPrompt).not.toContain('bridge_instructions');
   });
 
   it('keeps bridge agents inside the current lark-channel profile by default', () => {

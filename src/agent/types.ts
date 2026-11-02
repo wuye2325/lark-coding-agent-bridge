@@ -53,6 +53,12 @@ export interface AgentRunOptions {
   stopGraceMs?: number;
   /** Bridge 签发的当前 run 登记授权，不含应用密钥。 */
   callbackToken?: string;
+  /**
+   * Extra markdown appended to the adapter's system prompt. Used when the user
+   * prompt must stay verbatim (slash-command passthrough), so bridge context
+   * cannot live inside it.
+   */
+  appendSystemPrompt?: string;
 }
 
 export interface AgentRun {

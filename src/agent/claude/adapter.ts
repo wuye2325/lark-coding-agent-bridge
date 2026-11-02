@@ -73,7 +73,9 @@ export class ClaudeAdapter implements AgentAdapter {
     // stream-json response. Pass the prompt via stdin and the appended system
     // prompt via a temp file (the same approach the Codex adapter uses) so no
     // special characters ever reach the shell.
-    const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity));
+    const systemPrompt = buildBridgeSystemPrompt(this.botIdentity)
+      + (opts.appendSystemPrompt ? `\n\n${opts.appendSystemPrompt}` : '');
+    const systemPromptFile = writeSystemPromptFile(systemPrompt);
 
     const args = [
       '-p',

@@ -37,6 +37,7 @@ export interface StartRunFlowInput {
   executor: RunExecutor;
   now: number;
   stopGraceMs?: number;
+  appendSystemPrompt?: string;
   onSessionReset?: (message: string) => Promise<void>;
   observability?: {
     profile: string;
@@ -188,6 +189,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      ...(input.appendSystemPrompt ? { appendSystemPrompt: input.appendSystemPrompt } : {}),
       ...((input.scope.source === 'im' || input.scope.source === 'card') && input.scope.chatId ? {
         callbackContext: { chatId: input.scope.chatId, operatorOpenId: input.scope.actorId, agentId: input.capability.agentId },
       } : {}),

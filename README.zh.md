@@ -197,6 +197,8 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
 
+上表之外的 `/技能名`（如 `/implement`、`/tdd`）在 Claude profile 下会直通给本地 CLI：仅限单条文本消息（非交互卡片）、无附件/引用/话题上下文、发送者不是 bot 的情况，原文作为 prompt 交给 CLI 展开，`bridge_context` 改由 system prompt 提供。技能内可能包含写文件、运行测试或 git 提交；访问控制仍在 run-flow 生效、未被绕过，但任何能 @bot 的群成员都可以触发。以 `/` 开头的普通路径（如 `/Users/...`）会被当作未知命令交给 CLI，不会得到正常回答。Codex profile 不直通。
+
 ## 回复展示与 COT
 
 `/config` 可以调整三类展示选项：

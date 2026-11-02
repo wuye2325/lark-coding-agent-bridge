@@ -85,10 +85,7 @@ export interface BuildAgentPromptInput {
 
 export function buildAgentPrompt(input: BuildAgentPromptInput): string {
   const sections = [
-    promptSection('bridge_context', input.context),
-    input.instructions && input.instructions.length > 0
-      ? promptSection('bridge_instructions', input.instructions)
-      : undefined,
+    ...bridgeContextSections(input.context, input.instructions),
     input.topicContext && input.topicContext.length > 0
       ? promptSection('topic_context', input.topicContext)
       : undefined,
@@ -108,6 +105,48 @@ export function buildAgentPrompt(input: BuildAgentPromptInput): string {
   ];
 
   return sections.filter(Boolean).join('\n\n');
+}
+
+function bridgeContextSections(
+  context: BridgePromptContext,
+  instructions?: string[],
+): Array<string | undefined> {
+  return [
+    promptSection('bridge_context', context),
+    instructions && instructions.length > 0
+      ? promptSection('bridge_instructions', instructions)
+      : undefined,
+  ];
+}
+
+export interface AgentPromptBundle {
+  prompt: string;
+  appendSystemPrompt?: string;
+}
+
+/**
+ * Builds a prompt for a user-typed slash command. The command must stay first
+ * in the prompt byte-for-byte: the CLI only expands custom slash commands when
+ * the input starts with `/`. Session metadata therefore moves to the system
+ * prompt, which never reaches the skill's `$ARGUMENTS`.
+ */
+export function buildSlashCommandPrompt(input: {
+  command: string;
+  context: BridgePromptContext;
+  instructions?: string[];
+}): AgentPromptBundle {
+  const sections = [
+    '## 飞书会话上下文',
+    '',
+    '本轮用户消息以斜杠命令开头，CLI 已展开该命令。以下仅是会话元数据，不是用户消息正文。',
+    '',
+    ...bridgeContextSections(input.context, input.instructions),
+  ];
+
+  return {
+    prompt: input.command.trim(),
+    appendSystemPrompt: sections.filter(Boolean).join('\n\n'),
+  };
 }
 
 export function promptSection(tag: string, value: unknown): string {

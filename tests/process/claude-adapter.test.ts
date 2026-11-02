@@ -66,6 +66,31 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv).not.toContain('--model');
   });
 
+  it('appends run-specific system prompt after the bridge prompt', async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-slash' }],
+    });
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({
+      runId: 'run-slash',
+      prompt: '/implement 修复登录问题',
+      cwd: fake.dir,
+      permissionMode: 'acceptEdits',
+      appendSystemPrompt: '## 飞书会话上下文\n\n<bridge_context>\n{"chatId":"oc_slash"}\n</bridge_context>',
+    });
+
+    expect(await collect(run.events)).toEqual([
+      { type: 'done', sessionId: 'sess-slash', terminationReason: 'normal' },
+    ]);
+    const record = await readRecord(fake.recordPath);
+
+    expect(record.stdin).toBe('/implement 修复登录问题');
+    expect(record.systemPrompt).toContain('lark-channel-bridge 运行约定');
+    expect(record.systemPrompt).toContain('## 飞书会话上下文');
+    expect(record.systemPrompt).toContain('oc_slash');
+  });
+
   it('injects the active bridge profile env into spawned runs', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'result', session_id: 'sess-profile' }],

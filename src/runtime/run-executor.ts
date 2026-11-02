@@ -29,6 +29,7 @@ export interface SubmitRunInput {
   reasoningEffort?: string;
   images?: readonly string[];
   stopGraceMs?: number;
+  appendSystemPrompt?: string;
   nowait?: boolean;
   noProgressTimeoutMs?: number;
   onSessionInvalid?: () => Promise<void>;
@@ -126,6 +127,7 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
+      ...(input.appendSystemPrompt ? { appendSystemPrompt: input.appendSystemPrompt } : {}),
     };
     const revokeCallback = async (): Promise<void> => {
       if (!runOptions.callbackToken) return;
