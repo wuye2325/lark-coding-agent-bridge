@@ -185,7 +185,7 @@ describe('run card renderer snapshots', () => {
     expect(manifestJson).not.toContain('src/failed.ts');
   });
 
-  it('shows details for only the first failed tool across the full run', () => {
+  it('shows details for only the first failed tool across the full run and keeps it collapsed by default', () => {
     const state = stateFrom([
       { type: 'tool_use', id: 'first-error', name: 'Bash', input: { command: 'first command' } },
       { type: 'tool_result', id: 'first-error', output: 'FIRST_ERROR_EVIDENCE', isError: true },
@@ -195,16 +195,27 @@ describe('run card renderer snapshots', () => {
       { type: 'done', terminationReason: 'normal' },
     ]);
     const card = renderCard(state) as {
-      body?: { elements?: Array<{ tag?: string; expanded?: boolean }> };
+      body?: {
+        elements?: Array<{
+          tag?: string;
+          expanded?: boolean;
+          border?: { color?: string };
+        }>;
+      };
     };
     const cardJson = JSON.stringify(card);
+    const errorPanel = card.body?.elements?.find(
+      (element) => element.tag === 'collapsible_panel' && element.border?.color === 'red',
+    );
     const expandedPanels = card.body?.elements?.filter(
       (element) => element.tag === 'collapsible_panel' && element.expanded === true,
     );
 
     expect(cardJson).toContain('FIRST_ERROR_EVIDENCE');
     expect(cardJson).not.toContain('SECOND_ERROR_EVIDENCE');
-    expect(expandedPanels).toHaveLength(1);
+    expect(errorPanel).toBeDefined();
+    expect(errorPanel?.expanded).toBe(false);
+    expect(expandedPanels).toHaveLength(0);
   });
 
   it('limits first-error output to 500 characters', () => {
@@ -217,10 +228,19 @@ describe('run card renderer snapshots', () => {
     ]);
     const card = renderCard(state) as {
       body?: {
-        elements?: Array<{ expanded?: boolean; elements?: Array<{ content?: string }> }>;
+        elements?: Array<{
+          border?: { color?: string };
+          expanded?: boolean;
+          elements?: Array<{ content?: string }>;
+        }>;
       };
     };
-    const evidencePanel = card.body?.elements?.find((element) => element.expanded === true);
+    const evidencePanel = card.body?.elements?.find(
+      (element) =>
+        element.tag === 'collapsible_panel' &&
+        element.elements?.[0]?.content?.includes('**错误输出**'),
+    );
+    expect(evidencePanel?.expanded).toBe(false);
     const content = evidencePanel?.elements?.[0]?.content ?? '';
     const displayedOutput = content.split('**错误输出**\n```\n')[1]?.split('\n```')[0] ?? '';
 

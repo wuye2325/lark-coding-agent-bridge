@@ -455,7 +455,7 @@ function toolErrorPanel(tool: ToolEntry): object {
   const output = truncateErrorOutput(maskEmails(tool.output ?? '未返回错误内容'));
   return collapsiblePanel({
     title: toolHeaderText(tool),
-    expanded: true,
+    expanded: false,
     border: 'red',
     body: `**错误输出**\n\`\`\`\n${output}\n\`\`\``,
   });

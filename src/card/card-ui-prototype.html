@@ -683,7 +683,7 @@
       happy: { terminal: 'done', description: '当前配置：原生 CoT 展示过程，结束后发送一张结果卡片；工具隐藏，有明确写入记录的文件仍可查看。', answer: `已完成本次调整。
 
 处理结果已整理，记录到的写入文件见下方清单。`, tools: sampleTools },
-      tool_error: { terminal: 'done', description: '单次工具报错后，本轮仍正常结束。保留工具错误警告；隐藏工具时不展开详情，显示工具时只展开整轮首个错误。', answer: `本轮处理已结束。
+      tool_error: { terminal: 'done', description: '单次工具报错后，本轮仍正常结束。保留工具错误警告；隐藏工具时不展开详情，显示工具时默认收折整轮首个错误。', answer: `本轮处理已结束。
 
 过程中出现过工具错误，随后继续处理。请结合最终答复与验证结果判断任务目标是否达成。`, tools: [...sampleTools, failedTool, { ...failedTool, target: '示例后续检查', output: '第二个错误仅作为折叠摘要展示。' }] },
       streaming: { terminal: 'running', description: '正在运行：CoT 开启时只展示原生过程气泡，不额外创建一张重复展示过程的交互卡片。', answer: `正在检查当前工作区，并处理本次调整…`, tools: [sampleTools[0], pendingTool] },
@@ -840,7 +840,7 @@ ${view.tag}` : ''}`;
       const tools = document.getElementById('toolsArea');
       const errors = view.visibleTools.filter((tool) => tool.status === 'error');
       // CoT 已展示正常工具过程，结果卡片只保留关键错误证据。
-      tools.innerHTML = errors.map((tool, index) => `<details class="lark-panel panel-red error-detail" ${index === 0 ? 'open' : ''}>
+      tools.innerHTML = errors.map((tool, index) => `<details class="lark-panel panel-red error-detail">
         <summary class="lark-panel-header">${escapeHtml(`${toolIcon(tool)} ${tool.name} · ${tool.target}`)}</summary>
         ${index === 0 ? `<div class="lark-panel-content"><div class="code-box error">${escapeHtml((tool.output || '未返回错误内容').slice(0, 500))}</div></div>` : ''}
       </details>`).join('');
