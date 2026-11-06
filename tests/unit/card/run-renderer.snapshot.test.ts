@@ -229,6 +229,7 @@ describe('run card renderer snapshots', () => {
     const card = renderCard(state) as {
       body?: {
         elements?: Array<{
+          tag?: string;
           border?: { color?: string };
           expanded?: boolean;
           elements?: Array<{ content?: string }>;
