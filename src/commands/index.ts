@@ -172,6 +172,7 @@ const RESUME_CANDIDATE_TTL_MS = 10 * 60 * 1000;
 const resumeCandidates = new Map<string, ResumeCandidate>();
 const AUDIT_SAFE_COMMAND_REPLY = '命令已处理。';
 const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
+const CODEX_SLASH_COMMAND_RE = /^\/[A-Za-z0-9][\w:-]*(?:\s|$)/;
 
 const handlers: Record<string, Handler> = {
   '/new': handleNew,
@@ -245,6 +246,30 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
     log.fail('command', err, { cmd });
     reportMetric('command_fail', 1, { step: 'dispatch' });
   }
+  return true;
+}
+
+/** 提示未识别的 Codex 斜杠命令，但不把提示当作控制命令处理。 */
+export async function tryHandleUnsupportedCodexSlashCommand(
+  ctx: CommandContext,
+): Promise<boolean> {
+  if (ctx.controls.profileConfig.agentKind !== 'codex') return false;
+  if (ctx.msg.rawContentType === 'interactive') return false;
+  const senderType = (
+    ctx.msg.raw as { sender?: { sender_type?: unknown } } | undefined
+  )?.sender?.sender_type;
+  if (senderType === 'app' || senderType === 'bot') return false;
+  const trimmed = ctx.msg.content.trim();
+  if (!CODEX_SLASH_COMMAND_RE.test(trimmed)) return false;
+  const cmd = trimmed.split(/\s+/)[0] ?? '';
+  if (handlers[cmd]) return false;
+
+  await reply(
+    ctx,
+    `未知的 Codex / Bridge 命令：\`${cmd}\`。\n\n` +
+      'Bridge 命令请用 `/help` 查看。若要调用 Codex 技能，请把前缀改成 `$` 后重发（如 `$retro`）；' +
+      '也可在 Codex 交互终端使用 `/skills` 选择技能。',
+  );
   return true;
 }
 
@@ -1345,7 +1370,7 @@ function formatDoctorEchoStatus(echoText: string, state: RunState): string {
 }
 
 async function handleHelp(_args: string, ctx: CommandContext): Promise<void> {
-  const card = helpCard(ctx.agent.displayName);
+  const card = helpCard(ctx.agent.displayName, ctx.controls.profileConfig.agentKind);
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 

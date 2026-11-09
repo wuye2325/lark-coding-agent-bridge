@@ -161,6 +161,10 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
 
+### Custom slash commands and Codex skills
+
+Claude profiles can pass eligible standalone custom slash commands such as `/implement` to the local CLI. Codex profiles use non-interactive `codex exec`: only built-in bridge commands are handled as `/...` commands in Lark, and unknown slash commands receive direct guidance instead of being forwarded as ordinary prompts. To explicitly invoke a Codex skill from Lark, send `$skill-name` (for example, `$retro`). The `/skills` picker is available in the interactive Codex terminal, not as a Lark command.
+
 ## Reply Display and COT
 
 `/config` controls three presentation settings:

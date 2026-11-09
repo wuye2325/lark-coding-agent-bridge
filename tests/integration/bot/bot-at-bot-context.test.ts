@@ -236,6 +236,37 @@ describe('sender identity in bridge_context', () => {
   });
 });
 
+describe('Codex slash command feedback', () => {
+  it('answers an unsupported slash command without forwarding it or dropping queued text', async () => {
+    const h = await createHarness();
+    h.profileConfig.agentKind = 'codex';
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_queued_text',
+        content: '请继续处理前一条消息',
+        rawSenderType: 'user',
+      }),
+    );
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_unknown_slash',
+        content: '/retro',
+        rawSenderType: 'user',
+      }),
+    );
+
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.agent.runOptions[0]?.prompt).toContain('请继续处理前一条消息');
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('/retro');
+    expect(
+      h.channel.sent.some((sent) => JSON.stringify(sent.content).includes('$retro')),
+    ).toBe(true);
+  });
+});
+
 describe('stop 后立即发送新请求', () => {
   it('新请求仍会执行并在结果卡片中返回正文', async () => {
     const h = await createHarness();

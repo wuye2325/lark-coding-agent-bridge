@@ -3,7 +3,7 @@
   "version": "0.7.1",
   "description": "Bridge Feishu/Lark messenger with local CLI coding agents",
   "type": "module",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@12.18.0",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -48,7 +48,9 @@
     "prepare": "npm run build",
     "prepublishOnly": "pnpm typecheck && pnpm build"
   },
-  "bundleDependencies": ["@larksuite/channel"],
+  "bundleDependencies": [
+    "@larksuite/channel"
+  ],
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "@larksuite/channel": "^0.6.0",
@@ -93,15 +95,6 @@
   },
   "engines": {
     "node": ">=20.12.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "protobufjs"
-    ],
-    "patchedDependencies": {
-      "@larksuite/channel@0.6.0": "patches/@larksuite__channel@0.6.0.patch"
-    }
   },
   "keywords": [
     "feishu",

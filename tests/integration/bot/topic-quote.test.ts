@@ -259,6 +259,10 @@ describe('topic message quote handling', () => {
     // resumed conversation — no need to re-fetch and re-inject it every turn.
     const h = await createHarness({
       chatMode: 'topic',
+      agentEvents: [
+        { type: 'text', delta: '接着说' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
       threadMessages: [
         {
           message_id: 'om_topic_root',

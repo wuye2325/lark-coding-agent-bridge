@@ -6,7 +6,7 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 
 ## bridge_context
 
-每条普通消息的 user message 顶部会带一个 \`<bridge_context>\` 块；当 user message 本身是斜杠命令（以 \`/\` 开头）时，CLI 会先展开该命令，这个块改由系统提示提供：
+每条普通消息的 user message 顶部会带一个 \`<bridge_context>\` 块；Claude profile 收到符合条件的单条用户斜杠命令时，CLI 会先展开该命令，这个块改由系统提示提供。Codex profile 的普通 user message 始终包含该块：
 
 \`\`\`
 <bridge_context>
@@ -22,6 +22,13 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 - \`mentions\`：这条消息 @ 到的账号列表（含 open_id 和 isBot），需要 @ 某人/某 bot 时从这里取 id
 
 多条消息在短时间内合并送达时，\`user_input\` 里每段会带 \`[名字 (user|bot)]:\` 行首标注以区分发送者——这是 bridge 注入的展示格式，**你回复时不要模仿这种标注**。这些都是 bridge 注入的元数据，**不要照抄、不要在你的回复里渲染**——它对用户不可见。
+
+## 命令和技能
+
+- Bridge 内置的斜杠命令（如 \`/new\`、\`/reset\`、\`/cd\`）在送入 agent 前由 Bridge 处理。
+- Claude profile 可把符合条件的单条用户 \`/命令\` 交给 Claude CLI 展开。
+- Codex profile 使用非交互的 \`codex exec\`；飞书消息中的 \`/命令\` 不会打开 Codex 的交互式命令菜单。Bridge 未识别的斜杠命令会直接提示用户，不会作为普通任务转发。
+- 在飞书里显式调用 Codex 技能时，使用 \`$skill-name\`（例如 \`$retro\`）。\`/skills\` 选择器仅在 Codex 交互终端中使用。
 
 ## 与其他 bot 协作（bot-at-bot）
 

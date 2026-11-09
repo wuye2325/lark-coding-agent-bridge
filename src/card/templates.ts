@@ -177,7 +177,7 @@ export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
   return shell('🔁 恢复历史会话', elements);
 }
 
-export function helpCard(agentName = 'Agent'): object {
+export function helpCard(agentName = 'Agent', agentKind?: 'claude' | 'codex'): object {
   const escapedAgentName = escapeMd(agentName);
   return shell('💡 使用帮助', [
     divMd(
@@ -201,6 +201,12 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
         `- \`/doctor [描述]\` — 把日志和描述交给 ${escapedAgentName} 自助诊断`,
         '- `/help` — 本帮助',
+        ...(agentKind === 'codex'
+          ? [
+              '- Codex 技能：飞书里发送 `$skill-name`（如 `$retro`）；' +
+                '`/skills` 选择器仅在 Codex 交互终端可用。',
+            ]
+          : []),
         '',
         `其他内容直接交给 ${escapedAgentName}。`,
       ].join('\n'),

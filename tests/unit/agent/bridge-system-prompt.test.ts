@@ -33,6 +33,12 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('mentions');
   });
 
+  it('documents agent-specific slash commands and Codex skill invocation', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('Codex profile 使用非交互的 `codex exec`');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('Codex 技能时，使用 `$skill-name`');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('`/skills` 选择器仅在 Codex 交互终端中使用');
+  });
+
   it('tells the agent not to mimic the batch sender annotation format', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('[名字 (user|bot)]');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('不要模仿');

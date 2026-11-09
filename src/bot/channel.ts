@@ -41,7 +41,11 @@ import {
   type RunState,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
-import { tryHandleCommand, type Controls } from '../commands';
+import {
+  tryHandleCommand,
+  tryHandleUnsupportedCodexSlashCommand,
+  type Controls,
+} from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -846,7 +850,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
-  const handled = await tryHandleCommand({
+  const commandContext: Parameters<typeof tryHandleCommand>[0] = {
     channel,
     msg: emsg,
     scope,
@@ -867,12 +871,14 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     runExecutor: executor,
     processPool: pool,
     controls,
-  });
+  };
+  const handled = await tryHandleCommand(commandContext);
   if (handled) {
     const dropped = pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
+  if (await tryHandleUnsupportedCodexSlashCommand(commandContext)) return;
 
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });

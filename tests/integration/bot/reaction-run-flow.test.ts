@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
-import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { FakeAgentAdapter, type FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -220,7 +220,11 @@ describe('消息表情回复进入 Agent 会话', () => {
   });
 
   it('话题目标保持会话隔离并恢复对应 session，支持 appId 发送者', async () => {
-    const h = await createHarness();
+    const answer = [
+      { type: 'final_text', content: '已收到' },
+      { type: 'done', terminationReason: 'normal' },
+    ] as const;
+    const h = await createHarness({ events: [answer, answer] });
     h.sessions.set('oc_chat:omt_first', 'session_first', h.profileConfig.workspaces.default!);
     h.sessions.set('oc_chat:omt_second', 'session_second', h.profileConfig.workspaces.default!);
     h.channel.rawClient.im.v1.message.get
@@ -265,7 +269,7 @@ describe('消息表情回复进入 Agent 会话', () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(options: { events?: FakeAgentEvents } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
@@ -300,7 +304,7 @@ async function createHarness(): Promise<{
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
-    events: [{ type: 'done', terminationReason: 'normal' }],
+    events: options.events ?? [{ type: 'done', terminationReason: 'normal' }],
   });
   const channel = createFakeLarkChannel();
   sdkMock.channel = channel;
