@@ -106,6 +106,10 @@ const BRIDGE_AGENT_INSTRUCTIONS = [
   '如果提示 lark-channel context detected but not bound，停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight；不要改用普通 profile，不要自行 bind，也不要直接读取 config.json 里的账号或密钥。',
 ];
 
+const CODEX_COT_PROGRESS_INSTRUCTION =
+  '本轮启用了 COT。开始处理时，先单独发送一条简短、面向用户的进度说明，概括正在核对或准备采取的动作；' +
+  '不要输出内部推理，也不要复述用户问题。若任务有多步或调用工具，只在关键状态变化时再更新；最后仍需正常回答用户。';
+
 // Lark SDK logs API errors at error level even when the caller catches them.
 // These specific codes are EXPECTED in our flow (wiki-node lookup that
 // usually misses, fileComment.get that we deliberately let fall back to
@@ -1006,15 +1010,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const modelPref = controls.profileConfig.preferences.model;
   const modelSelection = normalizeModelSelection(agentKind, modelPref);
   const requestedModel = resolveModelArg(agentKind, modelPref);
+  const cotMessages = getCotMessages(controls.cfg);
+  const cotEnabled = cotMessages !== 'off';
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : undefined;
+  const extraInstructions = [
+    ...(modelSwitched
+      ? [
+          `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
+            '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+        ]
+      : []),
+    ...(agentKind === 'codex' && cotEnabled ? [CODEX_COT_PROGRESS_INSTRUCTION] : []),
+  ];
 
   const builtPrompt = buildPrompt(
     batch,
@@ -1022,7 +1031,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     quotes,
     topicContext,
     channel.botIdentity,
-    extraInstructions,
+    extraInstructions.length > 0 ? extraInstructions : undefined,
     agentKind,
   );
   const { prompt, appendSystemPrompt } = builtPrompt;
@@ -1152,9 +1161,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
   const terminalActionsMode = getTerminalActionsMode(controls.cfg);
-  const cotMessages = getCotMessages(controls.cfg);
-  const cotEnabled = cotMessages !== 'off';
-
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
   const filterForPrefs = (state: RunState): RunState => {

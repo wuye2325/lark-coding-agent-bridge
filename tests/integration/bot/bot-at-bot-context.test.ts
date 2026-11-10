@@ -267,6 +267,49 @@ describe('Codex slash command feedback', () => {
   });
 });
 
+describe('Codex COT progress guidance', () => {
+  it('adds user-visible progress guidance when COT is enabled', async () => {
+    const h = await createHarness();
+    h.profileConfig.agentKind = 'codex';
+    h.controls.cfg.preferences.cotMessages = 'detailed';
+    stubCotApi();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_cot_enabled',
+        content: '我下午去机场几点出门？',
+        rawSenderType: 'user',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    const instructions = readSection(prompt, 'bridge_instructions') as string[];
+    const bridgeInstructions = instructions.join('\n');
+    expect(bridgeInstructions).toContain('本轮启用了 COT');
+    expect(bridgeInstructions).toContain('不要输出内部推理');
+  });
+
+  it('does not add progress guidance when COT is disabled', async () => {
+    const h = await createHarness();
+    h.profileConfig.agentKind = 'codex';
+    h.controls.cfg.preferences.cotMessages = 'off';
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_cot_disabled',
+        content: '我下午去机场几点出门？',
+        rawSenderType: 'user',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('本轮已启用 COT');
+  });
+});
+
 describe('stop 后立即发送新请求', () => {
   it('新请求仍会执行并在结果卡片中返回正文', async () => {
     const h = await createHarness();
@@ -518,6 +561,28 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
       }
     },
   };
+}
+
+function stubCotApi(): void {
+  let cotSequence = 0;
+  vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+    const url = String(input);
+    if (url.endsWith('/open-apis/auth/v3/tenant_access_token/internal')) {
+      return new Response(JSON.stringify({
+        code: 0,
+        tenant_access_token: 'test-token',
+        expire: 7200,
+      }), { status: 200 });
+    }
+    if (url.includes('/open-apis/im/v1/message_cot?receive_id_type=chat_id')) {
+      cotSequence++;
+      return new Response(JSON.stringify({
+        code: 0,
+        data: { cot_id: `cot-${cotSequence}`, message_id: `cot-message-${cotSequence}` },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 });
+  }));
 }
 
 function createControls(profileConfig: ReturnType<typeof createDefaultProfileConfig>) {
