@@ -1,5 +1,7 @@
 import type { AgentBotIdentity } from './types';
 
+// This prompt is prepended to every Codex request; a literal `$skill-name`
+// here is parsed as an invocation even when it is only an example.
 export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 
 你正在 lark-channel-bridge 里跑：把飞书/Lark 用户消息桥到本地 agent CLI。
@@ -28,7 +30,7 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 - Bridge 内置的斜杠命令（如 \`/new\`、\`/reset\`、\`/cd\`）在送入 agent 前由 Bridge 处理。
 - Claude profile 可把符合条件的单条用户 \`/命令\` 交给 Claude CLI 展开。
 - Codex profile 使用非交互的 \`codex exec\`；飞书消息中的 \`/命令\` 不会打开 Codex 的交互式命令菜单。Bridge 未识别的斜杠命令会直接提示用户，不会作为普通任务转发。
-- 在飞书里显式调用 Codex 技能时，使用 \`$skill-name\`（例如 \`$retro\`）。\`/skills\` 选择器仅在 Codex 交互终端中使用。
+- Codex 技能仅在用户消息中出现明确调用格式时加载；不要因本段说明或普通任务自动调用。飞书端的格式见 \`/help\`；\`/skills\` 选择器仅在 Codex 交互终端中使用。
 
 ## 与其他 bot 协作（bot-at-bot）
 
