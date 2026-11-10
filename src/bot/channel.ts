@@ -1276,13 +1276,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         runId: execution.runId,
         scope,
         inputPreview: lastMsg.content,
-        showTools: () => getShowToolCalls(controls.cfg),
       });
       await cotPublisher.start();
       if (!cotPublisher.disabled) {
         const cotDone = consumeCotEvents(execution.subscribe(), cotPublisher, {
           detail: cotMessages,
-          showTools: () => getShowToolCalls(controls.cfg),
         });
         const finalState = await processAgentStream(
           handle,
@@ -1292,6 +1290,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           recordSession,
           async () => {},
           runTiming,
+          { suppressIntermediateText: agentKind === 'codex' },
         );
         await loadTerminalActionDeclaration(finalState);
         await loadRunTopic(finalState);
@@ -1809,6 +1808,7 @@ async function processAgentStream(
   recordSession: (event: AgentEvent) => void,
   flush: (state: RunState) => Promise<void>,
   timing?: { durationMs?: number },
+  options: { suppressIntermediateText?: boolean } = {},
 ): Promise<RunState> {
   const runStart = Date.now();
   let state: RunState = initialState;
@@ -1887,6 +1887,7 @@ async function processAgentStream(
         }
         continue;
       }
+      if (options.suppressIntermediateText && evt.type === 'text') continue;
 
       const prevTerminal = state.terminal;
       const prevFooter = state.footer;

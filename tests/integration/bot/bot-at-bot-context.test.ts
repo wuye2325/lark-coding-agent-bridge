@@ -6,7 +6,7 @@ import type { AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/t
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
-import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { FakeAgentAdapter, type FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -308,6 +308,47 @@ describe('Codex COT progress guidance', () => {
 
     expect(h.agent.runOptions[0]?.prompt).not.toContain('本轮已启用 COT');
   });
+
+  it('keeps detailed progress and tool output in CoT when result-card tools are hidden', async () => {
+    const progress = '正在核对相关材料';
+    const h = await createHarness({
+      agentEvents: [
+        { type: 'text', delta: progress },
+        { type: 'tool_use', id: 'tool-1', name: 'command_execution', input: { command: 'check' } },
+        { type: 'tool_result', id: 'tool-1', output: 'TOOL_RESULT_ONLY_IN_COT', isError: false },
+        { type: 'final_text', content: 'FINAL_REPLY' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    h.profileConfig.agentKind = 'codex';
+    h.profileConfig.preferences.cotMessages = 'detailed';
+    h.profileConfig.preferences.showToolCalls = false;
+    h.profileConfig.preferences.messageReply = 'card';
+    const cotEvents = stubCotApi();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_cot_detail',
+        content: '请核对一下',
+        rawSenderType: 'user',
+      }),
+    );
+    await waitFor(() => h.channel.sent.some((sent) => JSON.stringify(sent.content).includes('FINAL_REPLY')));
+
+    const cotPayloads = cotEvents.map((event) => ({
+      type: event.event_type,
+      content: JSON.parse(event.content) as Record<string, unknown>,
+    }));
+    expect(cotPayloads.some((event) => event.type === 'TOOL_CALL_ARGS' && String(event.content.delta).includes('command'))).toBe(true);
+    expect(cotPayloads.some((event) => event.type === 'TOOL_CALL_RESULT' && String(event.content.content).includes('TOOL_RESULT_ONLY_IN_COT'))).toBe(true);
+    expect(cotPayloads.some((event) => event.type === 'TEXT_MESSAGE_CONTENT' && event.content.delta === progress)).toBe(true);
+
+    const regularReply = JSON.stringify(h.channel.sent) + JSON.stringify(h.channel.cardStreams);
+    expect(regularReply).toContain('FINAL_REPLY');
+    expect(regularReply).not.toContain(progress);
+    expect(regularReply).not.toContain('TOOL_RESULT_ONLY_IN_COT');
+  });
 });
 
 describe('stop 后立即发送新请求', () => {
@@ -419,7 +460,7 @@ describe('stop 后立即发送新请求', () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(options: { agentEvents?: FakeAgentEvents } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
@@ -454,7 +495,7 @@ async function createHarness(): Promise<{
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
-    events: [{ type: 'done', terminationReason: 'normal' }],
+    events: options.agentEvents ?? [{ type: 'done', terminationReason: 'normal' }],
   });
   const channel = createFakeLarkChannel();
   sdkMock.channel = channel;
@@ -563,9 +604,10 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
   };
 }
 
-function stubCotApi(): void {
+function stubCotApi(): Array<{ event_type: string; content: string }> {
   let cotSequence = 0;
-  vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+  const events: Array<{ event_type: string; content: string }> = [];
+  vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/open-apis/auth/v3/tenant_access_token/internal')) {
       return new Response(JSON.stringify({
@@ -581,8 +623,16 @@ function stubCotApi(): void {
         data: { cot_id: `cot-${cotSequence}`, message_id: `cot-message-${cotSequence}` },
       }), { status: 200 });
     }
+    if (url.endsWith('/open-apis/im/v1/message_cot')) {
+      if (init?.method === 'PUT' && typeof init.body === 'string') {
+        const body = JSON.parse(init.body) as { events?: Array<{ event_type: string; content: string }> };
+        events.push(...(body.events ?? []));
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 });
+    }
     return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 });
   }));
+  return events;
 }
 
 function createControls(profileConfig: ReturnType<typeof createDefaultProfileConfig>) {

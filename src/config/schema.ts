@@ -103,8 +103,8 @@ export interface AppPreferences {
   messageReplyMigrated?: boolean;
   /**
    * Whether to render tool-call blocks (Bash / Read / Edit / ...) in the
-   * output. Default true. Turn off if you only care about Claude's final
-   * text answer and want to hide the "工具调用过程".
+   * ordinary reply. Default true. This does not control separate COT
+   * process messages.
    */
   showToolCalls?: boolean;
   /**
@@ -123,8 +123,8 @@ export interface AppPreferences {
   reasoningEffort?: string;
   /**
    * Whether to send a separate Lark COT process message before the final
-   * answer. `brief` mirrors the lightweight tool/progress visibility from
-   * the legacy tool display; `detailed` also includes tool args/output.
+   * answer. `brief` shows progress text and tool summaries; `detailed` also
+   * includes tool args/output, regardless of ordinary reply tool visibility.
    * Legacy boolean/string `on` is accepted by the resolver for upgrades.
    */
   cotMessages?: CotMessagesMode | 'on' | 'simple';

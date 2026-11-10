@@ -219,8 +219,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
               tag: 'markdown',
               content:
                 '\n**工具调用显示**\n' +
-                '_显示:可以看到 bot 跑了什么命令、读了哪些文件等过程_\n' +
-                '_隐藏:只看 agent 最终的文字答复,跳过所有工具块_',
+                '_控制普通回复里的工具块显示，不影响单独的 COT 过程消息_\n' +
+                '_隐藏:普通回复只看 agent 最终的文字答复_',
             },
             {
               tag: 'select_static',
