@@ -106,8 +106,12 @@ const BRIDGE_AGENT_INSTRUCTIONS = [
   '如果提示 lark-channel context detected but not bound，停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight；不要改用普通 profile，不要自行 bind，也不要直接读取 config.json 里的账号或密钥。',
 ];
 
+const CODEX_REPLY_ROUTING_INSTRUCTION =
+  '过程说明只通过 assistant 中间输出交给 Bridge 投递到 COT；COT 关闭或不可用时由 Bridge 省略。' +
+  '不得调用 lark-cli、HTTP 或消息工具发送过程说明。需要用户回答的澄清问题、授权请求和最终结果仍正常回复。';
+
 const CODEX_COT_PROGRESS_INSTRUCTION =
-  '本轮启用了 COT。开始处理时，先单独发送一条简短、面向用户的进度说明，概括正在核对或准备采取的动作；' +
+  '本轮启用了 COT。开始处理时，先通过 assistant 中间输出提供一条简短、面向用户的进度说明，由 Bridge 展示在 COT 气泡中，概括正在核对或准备采取的动作；' +
   '不要输出内部推理，也不要复述用户问题。若任务有多步或调用工具，只在关键状态变化时再更新；最后仍需正常回答用户。';
 
 // Lark SDK logs API errors at error level even when the caller catches them.
@@ -1022,6 +1026,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
         ]
       : []),
+    ...(agentKind === 'codex' ? [CODEX_REPLY_ROUTING_INSTRUCTION] : []),
     ...(agentKind === 'codex' && cotEnabled ? [CODEX_COT_PROGRESS_INSTRUCTION] : []),
   ];
 
@@ -1365,6 +1370,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
         runTiming,
+        { suppressIntermediateText: agentKind === 'codex' },
       );
       try {
         await awaitRenderAwareStream({
@@ -1449,6 +1455,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
         runTiming,
+        { suppressIntermediateText: agentKind === 'codex' },
       );
       try {
         await awaitRenderAwareStream({
@@ -1487,6 +1494,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
         runTiming,
+        { suppressIntermediateText: agentKind === 'codex' },
       );
       await loadTerminalActionDeclaration(finalState);
       await loadRunTopic(finalState);

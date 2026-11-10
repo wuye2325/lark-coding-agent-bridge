@@ -289,6 +289,7 @@ describe('Codex COT progress guidance', () => {
     const bridgeInstructions = instructions.join('\n');
     expect(bridgeInstructions).toContain('本轮启用了 COT');
     expect(bridgeInstructions).toContain('不要输出内部推理');
+    expect(bridgeInstructions).toContain('不得调用 lark-cli、HTTP 或消息工具发送过程说明');
   });
 
   it('does not add progress guidance when COT is disabled', async () => {
@@ -306,7 +307,8 @@ describe('Codex COT progress guidance', () => {
     );
     await waitFor(() => h.agent.runOptions.length === 1);
 
-    expect(h.agent.runOptions[0]?.prompt).not.toContain('本轮已启用 COT');
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('本轮启用了 COT');
+    expect(h.agent.runOptions[0]?.prompt).toContain('不得调用 lark-cli、HTTP 或消息工具发送过程说明');
   });
 
   it('keeps detailed progress and tool output in CoT when result-card tools are hidden', async () => {

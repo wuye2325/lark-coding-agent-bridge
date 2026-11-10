@@ -218,7 +218,7 @@ describe('markdown stream startup failures', () => {
       // at all and there is no late failure to log.
       events: [
         [
-          { type: 'text', delta: 'progress update' },
+          { type: 'tool_use', id: 'visible-progress-tool', name: 'Bash', input: { command: 'true' } },
           {
             type: 'error',
             message: 'codex exited with code 1: Error loading config.toml',
@@ -263,7 +263,7 @@ describe('markdown stream startup failures', () => {
     );
   }, 10_000);
 
-  it('sends one dedicated non-streaming final reply after progress completes', async () => {
+  it('Codex 中间文本被省略，最终答复单独发送', async () => {
     const visibleProgress: string[] = [];
     const h = await createHarness({
       events: [
@@ -287,7 +287,7 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_final', 'run'));
     await waitFor(() => h.channel.sent.length === 1);
 
-    expect(visibleProgress.some((markdown) => markdown.includes('progress update'))).toBe(true);
+    expect(visibleProgress.some((markdown) => markdown.includes('progress update'))).toBe(false);
     expect(h.channel.sent).toHaveLength(1);
     expect(lastCard(h.channel)).toContain('FINAL_SENTINEL');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
@@ -401,7 +401,7 @@ describe('markdown stream startup failures', () => {
     expect(lastCard(h.channel)).toContain('FINAL_ONLY_SENTINEL');
   });
 
-  it('does not repeat streamed text in the result card when Codex held nothing back', async () => {
+  it('Codex 未返回最终答复时省略过程文本并展示空结果状态', async () => {
     // Codex only reserves its *last* message as `final_text`; an abnormal turn
     // end (turn.failed, or the process dying before turn.completed) flushes it
     // as a text block instead. Those blocks are already on screen, so the
@@ -426,7 +426,8 @@ describe('markdown stream startup failures', () => {
     await startTestBridge(h);
 
     await h.channel.handlers.message?.(message('om_no_final', 'run'));
-    await waitFor(() => visibleProgress.some((markdown) => markdown.includes('这是答案')));
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(visibleProgress).toHaveLength(0);
     // 留出时间让终态结果卡片送达，再执行断言。
     await new Promise((resolve) => setTimeout(resolve, 80));
 
@@ -504,7 +505,7 @@ describe('markdown stream startup failures', () => {
     const fail = vi.spyOn(log, 'fail').mockImplementation(() => {});
     const h = await createHarness({
       events: [
-        { type: 'text', delta: 'progress update' },
+        { type: 'tool_use', id: 'visible-progress-tool', name: 'Bash', input: { command: 'true' } },
         { type: 'final_text', content: 'FINAL_AFTER_STREAM_FAILURE' },
         { type: 'done', terminationReason: 'normal' },
       ],
@@ -563,7 +564,7 @@ describe('markdown stream startup failures', () => {
     ).toBe(false);
   });
 
-  it('sends one dedicated final reply card after progress completes in card mode', async () => {
+  it('Codex/card 省略过程文本并只发送最终结果卡片', async () => {
     const progressCards: unknown[] = [];
     const h = await createHarness({
       messageReply: 'card',
@@ -588,10 +589,11 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_card_final', 'run'));
     await waitFor(() => h.channel.sent.length === 1);
 
-    // Intermediate agent messages stream as progress; the final answer never
+    // Codex 过程说明被省略；最终答案仅进入最终回复。
+    // The final answer never
     // leaks into the progress card (it is held back for the dedicated reply).
     const progressJson = JSON.stringify(progressCards);
-    expect(progressJson).toContain('progress update');
+    expect(progressJson).not.toContain('progress update');
     expect(progressJson).not.toContain('FINAL_SENTINEL');
 
     // The terminal answer arrives as exactly one non-streaming card send.
@@ -636,14 +638,15 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(cardJson).toContain('主题卡片的最终答复');
     expect(cardJson).not.toMatch(/隐藏的过程文字|hidden topic command|hidden topic output/);
     expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
-    expect(cotBodies.join('\n')).not.toMatch(/hidden topic command|hidden topic output/);
+    expect(cotBodies.join('\n')).toContain('hidden topic command');
+    expect(cotBodies.join('\n')).not.toContain('hidden topic output');
   });
 
   it('运行中保留默认主题，终态结果卡一次性采用 Agent 覆盖', async () => {
     const h = await createHarness({
       agentKind: 'codex',
       messageReply: 'card',
-      showToolCalls: false,
+      showToolCalls: true,
       cotMessages: 'off',
     });
     const registry = new CallbackRegistryStore(join(h.tmp.profile, 'callback-registry.json'));
@@ -661,7 +664,7 @@ describe('CoT 与最终结果卡片联动', () => {
           stop: async () => { finishRun.resolve(undefined); },
           waitForExit: async () => true,
           events: (async function* (): AsyncIterable<AgentEvent> {
-            yield { type: 'text', delta: '正在处理' };
+            yield { type: 'tool_use', id: 'visible-progress-tool', name: 'Bash', input: { command: 'true' } };
             reachedRunning.resolve(undefined);
             await finishRun.promise;
             if (!opts.callbackToken) throw new Error('测试运行未获签名 token');
@@ -841,6 +844,39 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).toContain('工具调用：1 次 · 成功 0 · 错误 1');
   });
 
+  it.each(['card', 'markdown', 'text'] as const)(
+    'Codex 在 COT 关闭或创建失败时省略普通进度文本：%s',
+    async (messageReply) => {
+      for (const createFails of [false, true]) {
+        mockCotApi(createFails);
+        const displayed: string[] = [];
+        const h = await createHarness({
+          agentKind: 'codex', messageReply, showToolCalls: false,
+          cotMessages: createFails ? 'brief' : 'off',
+          events: [
+            { type: 'text', delta: 'PROGRESS_SHOULD_STAY_OUT_OF_CHAT' },
+            { type: 'final_text', content: 'VISIBLE_FINAL_REPLY' },
+            { type: 'done', terminationReason: 'normal' },
+          ],
+          stream: async (_chatId, input) => {
+            const value = input as {
+              markdown?: (ctrl: { setContent(text: string): Promise<void> }) => Promise<void>;
+              card?: { producer?: (ctrl: { update(card: unknown): Promise<void> }) => Promise<void> };
+            };
+            await value.markdown?.({ setContent: async (text) => { displayed.push(text); } });
+            await value.card?.producer?.({ update: async (card) => { displayed.push(JSON.stringify(card)); } });
+            return { messageId: 'om_progress_policy' };
+          },
+        });
+        if (messageReply === 'text') h.controls.cfg.preferences.messageReplyMigrated = true;
+        await startTestBridge(h);
+        await h.channel.handlers.message?.(message('om_progress_policy_request', 'run'));
+        await waitFor(() => h.channel.sent.some((sent) => JSON.stringify(sent.content).includes('VISIBLE_FINAL_REPLY')));
+        expect(displayed.join('\n') + JSON.stringify(h.channel.sent)).not.toContain('PROGRESS_SHOULD_STAY_OUT_OF_CHAT');
+      }
+    },
+  );
+
   const cotModes = ['off', 'brief', 'detailed'] as const;
   const toolVisibilityModes = [false, true] as const;
   const replyModes = ['card', 'markdown', 'text'] as const;
@@ -919,7 +955,7 @@ describe('CoT 与最终结果卡片联动', () => {
         if (messageReply === 'text') {
           expect(streamCalls).toHaveLength(0);
         } else {
-          expect(streamCalls).toHaveLength(1);
+          expect(streamCalls).toHaveLength(showToolCalls ? 1 : 0);
           if (showToolCalls) expect(progressContent.join('\n')).toContain('Bash');
           else expect(progressContent.join('\n')).not.toMatch(/Bash|matrix-error-command|MATRIX_ERROR_OUTPUT/);
         }
@@ -927,9 +963,7 @@ describe('CoT 与最终结果卡片联动', () => {
         expect(streamCalls).toHaveLength(0);
         expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(true);
         const cotContent = cotBodies.join('\n');
-        if (!showToolCalls) {
-          expect(cotContent).not.toMatch(/Bash|Read|matrix-error-command|matrix-file\.ts|MATRIX_ERROR_OUTPUT|MATRIX_SUCCESS_OUTPUT/);
-        } else {
+        { // COT 的信息量由自身设置决定，独立于普通回复的工具开关。
           expect(cotContent).toContain('Bash');
           expect(cotContent).toContain('matrix-error-command');
           if (cotMessages === 'brief') {
@@ -986,7 +1020,7 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).toContain('已完成 · 1 次工具错误');
     expect(resultJson).not.toMatch(/private\/failed\.ts|CONFIDENTIAL_ERROR_DETAIL|Edit|Write|NotebookEdit/);
     expect(cotBodies.join('\n')).not.toMatch(
-      /private\/failed\.ts|CONFIDENTIAL_ERROR_DETAIL|Edit|Write|NotebookEdit/,
+      /CONFIDENTIAL_ERROR_DETAIL|TOOL_CALL_ARGS/,
     );
   });
 
@@ -1048,7 +1082,7 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).not.toMatch(/HIDDEN_BUDGET_ERROR|@example\.com/);
     expect(resultJson).toContain('[at]example.com');
     expect(actionCommands).toBeUndefined();
-    expect(cotBodies.join('\n')).not.toMatch(/HIDDEN_BUDGET_ERROR|user\d+@example\.com/);
+    expect(cotBodies.join('\n')).not.toMatch(/HIDDEN_BUDGET_ERROR|TOOL_CALL_ARGS/);
   });
 
   it('正常结束但没有正文时仍发送状态与摘要卡片', async () => {
@@ -1117,7 +1151,7 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(resultJson).not.toMatch(/中断前的过程文本|Bash|Read|hidden failure|hidden error|hidden path/);
   });
 
-  it('CoT 关闭时保留 markdown 过程流并以结果卡片收尾', async () => {
+  it('CoT 关闭且工具隐藏时省略过程流并以结果卡片收尾', async () => {
     const cotUrls = mockCotApi(false);
     const streamInputs: unknown[] = [];
     const streamedContent: string[] = [];
@@ -1147,8 +1181,8 @@ describe('CoT 与最终结果卡片联动', () => {
     await waitFor(() => h.channel.sent.length === 1);
 
     expect(cotUrls.some((url) => url.includes('/open-apis/im/v1/message_cot'))).toBe(false);
-    expect(streamInputs).toHaveLength(1);
-    expect(streamedContent.some((content) => content.includes('旧模式的过程消息'))).toBe(true);
+    expect(streamInputs).toHaveLength(0);
+    expect(streamedContent.some((content) => content.includes('旧模式的过程消息'))).toBe(false);
     expect(JSON.stringify(streamedContent)).not.toMatch(/Bash|hidden off command|hidden off output/);
     const result = h.channel.sent[0]?.content as { card?: unknown; markdown?: string };
     expect(result.card).toBeDefined();
@@ -1274,7 +1308,7 @@ describe('CoT 与最终结果卡片联动', () => {
     expect(cards[0]).not.toContain('CoT 更新失败时的过程文本');
   });
 
-  it('CoT 关闭且工具隐藏时保留交互卡片流程并显示完整统计', async () => {
+  it('CoT 关闭且工具隐藏时省略过程卡片并显示完整统计', async () => {
     const progressCards: unknown[] = [];
     const h = await createHarness({
       agentKind: 'codex',
@@ -1300,7 +1334,7 @@ describe('CoT 与最终结果卡片联动', () => {
     await h.channel.handlers.message?.(message('om_card_hidden_tools', 'run'));
     await waitFor(() => h.channel.sent.length === 1);
 
-    expect(JSON.stringify(progressCards)).toContain('交互卡片的过程内容');
+    expect(JSON.stringify(progressCards)).not.toContain('交互卡片的过程内容');
     expect(JSON.stringify(progressCards)).not.toMatch(/Bash|hidden card command|hidden card output/);
     expect(h.channel.sent).toHaveLength(1);
     const resultJson = JSON.stringify(h.channel.sent[0]?.content);
@@ -1450,13 +1484,10 @@ describe('CoT 与最终结果卡片联动', () => {
     await startTestBridge(h);
 
     await h.channel.handlers.message?.(message(`om_card_terminal_${label}`, 'run'));
-    await waitFor(() => JSON.stringify(progressCards).includes(label));
-    if (finalText) await waitFor(() => h.channel.sent.length === 1);
-    else expect(h.channel.sent).toHaveLength(0);
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(progressCards).toHaveLength(0);
 
-    const result = JSON.parse(finalText
-      ? JSON.stringify(h.channel.sent[0]?.content)
-      : JSON.stringify(progressCards.at(-1))) as {
+    const result = JSON.parse(JSON.stringify(h.channel.sent[0]?.content)) as {
         card?: { header?: unknown };
         header?: {
           template?: string;
@@ -1479,7 +1510,8 @@ describe('CoT 与最终结果卡片联动', () => {
       expect(resultJson).toContain(finalText);
       expect(resultJson).not.toContain('只在进展卡展示的过程');
     } else {
-      expect(resultJson).toContain('只在进展卡展示的过程');
+      expect(resultJson).not.toContain('只在进展卡展示的过程');
+      expect(resultJson).toContain('未返回内容');
     }
   });
 });
